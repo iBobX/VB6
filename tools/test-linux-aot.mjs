@@ -46,13 +46,13 @@ async function writeApplication(result,directory) {
   assert.deepEqual(new Uint8Array(await fs.readFile(executable)),result.executable);
   return executable;
 }
-export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDirectory,reportDirectory,sysroot,compiler,qemu,jobs=3}={}) {
-  const target=linuxTarget(architecture);architecture=target.option;
-  reportDirectory??=path.join(root,'reports',architecture==='x64'?'linux-aot':'linux-aot-arm64');
+export async function testLinuxAOT({architecture='x64',toolkit='gtk3',rebuild=false,runtimeDirectory,reportDirectory,sysroot,compiler,qemu,jobs=3}={}) {
+  const target=linuxTarget(architecture,toolkit);architecture=target.option;
+  reportDirectory??=path.join(root,'reports','linux-aot'+(toolkit==='gtk4'?'-gtk4':'')+(architecture==='arm64'?'-arm64':''));
   const work=await fs.mkdtemp(path.join(os.tmpdir(),'vb6-linux-aot-tests-'));
   const artifacts=path.join(root,'artifacts/linux-aot');
   let transcript='';
-  const report={platform:process.platform,arch:architecture,architecture:target.architecture,hostArchitecture:process.arch,rebuild,
+  const report={platform:process.platform,toolkit,arch:architecture,architecture:target.architecture,hostArchitecture:process.arch,rebuild,
     executionMode:process.arch===architecture?'native':'qemu-user',[architecture+'ExecutionVerified']:false,machineCodeExecutionVerified:false,gtkExecutionVerified:false,
     richTextVerified:false,printerServicesVerified:false,previousInstanceVerified:false,checks:[]};
   const log=value=>{transcript+=value;if(transcript.length>16*1024*1024)transcript=transcript.slice(-16*1024*1024);};
@@ -71,7 +71,7 @@ export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDire
     if(sysroot)sysroot=await fs.realpath(path.resolve(sysroot));
     if(process.arch!==architecture){
       if(!sysroot)throw new Error('Cross-architecture execution requires an explicit target sysroot.');
-      report.sysrootEnvironment=await verifyLinuxAOTExecutionSysroot(sysroot,{architecture});
+      report.sysrootEnvironment=await verifyLinuxAOTExecutionSysroot(sysroot,{architecture,toolkit});
       emulator=await linuxNativeTool(qemu||(architecture==='arm64'?'qemu-aarch64':'qemu-x86_64'));
       report.emulatorVersion=(await run(emulator,['--version'])).trim();
       // QEMU -L redirects dlopen, but GTK's faccessat-based module discovery
@@ -84,20 +84,21 @@ export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDire
     let runtime;
     if(rebuild) {
       console.log('Building the native Linux '+target.architecture+' GTK runtime...');
-      runtime=await buildLinuxAOTTemplate({architecture,out:path.join(work,'runtime'),sysroot,compiler,jobs,log});
-      const destination=path.join(artifacts,architecture==='x64'?'runtime':'runtime-arm64');await fs.mkdir(destination,{recursive:true});
+      runtime=await buildLinuxAOTTemplate({architecture,toolkit,out:path.join(work,'runtime'),sysroot,compiler,jobs,log});
+      const destination=path.join(artifacts,'runtime'+(toolkit==='gtk4'?'-gtk4':'')+(architecture==='arm64'?'-arm64':''));await fs.mkdir(destination,{recursive:true});
       await fs.writeFile(path.join(destination,'runtime-'+target.architecture),runtime.bytes,{mode:0o644});
       await fs.writeFile(path.join(destination,'runtime.json'),JSON.stringify(runtime.manifest,null,2)+'\n');
     }else if(runtimeDirectory) {
       runtime={bytes:new Uint8Array(await fs.readFile(path.join(runtimeDirectory,'runtime-'+target.architecture))),
         manifest:JSON.parse(await fs.readFile(path.join(runtimeDirectory,'runtime.json'),'utf8'))};
     }else {
-      checkLinuxAOTRuntimeProvenance(root,{architecture});
+      checkLinuxAOTRuntimeProvenance(root,{architecture,toolkit});
       const {loadLinuxAOTRuntime}=await import('../packages/linux-native/src/aot-runtime.js');
-      runtime=await loadLinuxAOTRuntime({architecture});
+      runtime=await loadLinuxAOTRuntime({architecture,toolkit});
     }
     await verifyLinuxAOTRuntime(runtime.bytes,runtime.manifest);
     assert.equal(runtime.manifest.architecture,target.architecture,'Runtime proof must execute the requested machine architecture.');
+    assert.equal(runtime.manifest.toolkit??'gtk3',toolkit,'Runtime proof must execute the requested toolkit.');
     report.runtime=runtime.manifest;
     for(const [name,value]of Object.entries(readLinuxAOTSourceProvenance(root)))
       assert.equal(runtime.manifest.provenance?.[name],value,'Native runtime source provenance: '+name);
@@ -141,7 +142,7 @@ export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDire
 
     const nativeCase=async(label,project,optimization,validate,{gtk=false}={})=>{
       console.log('Executing '+label+' O'+optimization+(gtk?' with GTK':'')+'...');
-      const compiled=compileLinuxAOT(project,{architecture,name:project.name+'-O'+optimization,optimization});
+      const compiled=compileLinuxAOT(project,{architecture,toolkit,name:project.name+'-O'+optimization,optimization});
       const result=await linkLinuxAOT(compiled,runtime),directory=path.join(work,label+'-O'+optimization),executable=await writeApplication(result,directory);
       const image=inspectLinuxELF(result.executable,{requireProject:true,architecture});
       assert.equal(image.image.machine,target.machine);assert.equal(image.image.callingConvention,target.callingConvention);
@@ -157,7 +158,7 @@ export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDire
 
     for(const optimization of [0,1,2,3]) {
       await nativeCase('language',conformanceProject(),optimization,validateConformance);
-      await nativeCase('abi-platform',linuxBrowserProject(architecture),optimization,output=>assert.match(output,/LINUX_BROWSER_AOT_OK/));
+      await nativeCase('abi-platform',linuxBrowserProject(architecture,toolkit),optimization,output=>assert.match(output,/LINUX_BROWSER_AOT_OK/));
     }
     report.optimizationLevelsVerified=[0,1,2,3];report.conformanceVerified=true;report.resourcesVerified=true;
     const resourceCase=await nativeCase('resource-path',conformanceProject(),2,validateConformance);
@@ -198,7 +199,7 @@ export async function testLinuxAOT({architecture='x64',rebuild=false,runtimeDire
     await nativeCase('gtk-controls',linuxGtkProject(),2,output=>assert.match(output,/LINUX_GTK_CONTROLS_OK/),{gtk:true});
     report.gtkExecutionVerified=true;
     await nativeCase('richtext',linuxRichTextProject(),2,output=>assert.match(output,/LINUX_RICH_PERSISTENCE_OK/),{gtk:true});
-    const serviceProof=await qualifyLinuxCompiledServices(runtime,{architecture,prefix:[...emulationPrefix]});
+    const serviceProof=await qualifyLinuxCompiledServices(runtime,{architecture,toolkit,prefix:[...emulationPrefix]});
     assert.equal(serviceProof.passed,true);report.compiledServices=serviceProof;
     report['compiled-printers-O3']=serviceProof.artifacts.printer;
     report['compiled-instance-O3']=serviceProof.artifacts.instance;
@@ -241,9 +242,9 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1]
     for(let index=0;index<args.length;++index){
       const key=args[index];
       if(key==='--rebuild')options.rebuild=true;
-      else if(['--runtime','--architecture','--sysroot','--qemu','--compiler','--report','--jobs'].includes(key)&&args[index+1]){
+      else if(['--runtime','--architecture','--toolkit','--sysroot','--qemu','--compiler','--report','--jobs'].includes(key)&&args[index+1]){
         const value=args[++index];options[{'--runtime':'runtimeDirectory','--report':'reportDirectory'}[key]||key.slice(2)]=key==='--jobs'?Number(value):value;
-      }else throw new Error('Usage: node tools/test-linux-aot.mjs [--architecture x64|arm64] [--rebuild | --runtime DIRECTORY] [--sysroot DIRECTORY] [--qemu PATH] [--compiler PATH] [--report DIRECTORY] [--jobs N]');
+      }else throw new Error('Usage: node tools/test-linux-aot.mjs [--architecture x64|arm64] [--toolkit gtk3|gtk4] [--rebuild | --runtime DIRECTORY] [--sysroot DIRECTORY] [--qemu PATH] [--compiler PATH] [--report DIRECTORY] [--jobs N]');
     }
     await testLinuxAOT(options);
   }catch(error){console.error(error.stack||error.message,error.output||'');process.exitCode=1;}
