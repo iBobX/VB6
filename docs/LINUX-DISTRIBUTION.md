@@ -169,7 +169,9 @@ dbus-run-session -- xvfb-run -a \
   --report reports/linux-native-distribution-gtk4-x64
 ```
 
-The CI matrix runs both architectures and both toolkits with execution, GUI checks, instance checks, signatures, and icon isolation enabled. GTK 4 fixtures select software rendering with the appropriate switches for the bundled GTK4.14 or GNOME Platform's GTK4.22; production launchers retain user rendering/accessibility choices. The GTK 4 AppImage FontChooser check requires user/mount namespaces to mask the host ISO data inside that test process. Flatpak execution retains its normal application and image-decoder sandboxes.
+The CI matrix runs both architectures and both toolkits with execution, GUI checks, instance checks, signatures, and icon isolation enabled. GTK 4 fixtures select software rendering with the appropriate switches for the bundled GTK4.14 or GNOME Platform's GTK4.22; production launchers retain user rendering/accessibility choices. The GTK 4 AppImage FontChooser check requires a private mount namespace to mask the host ISO data inside that test process. Flatpak execution retains its normal application and image-decoder sandboxes.
+
+On hosts that restrict unprivileged user namespaces, the explicit `--iso-mount-namespace privileged` option prepares only that ISO-data mask through noninteractive `sudo` in a private mount namespace. It makes mount propagation private, hides the host language tables, and drops to the original UID/GID with no supplementary groups and `no-new-privs` before running the AppImage. The child checks its identity and restores only the selected display/session and fixture variables. CI uses this option; the default `user` method requires no `sudo`. Both methods require the host-data absence assertion and actual FontChooser execution. No runner-wide namespace policy or Flatpak sandbox is changed.
 
 For development environments that can only inspect containers, `--execute off` is explicit and the resulting report is labelled `containers-only`. It does not qualify native execution. No container-only result substitutes for the native release matrix.
 

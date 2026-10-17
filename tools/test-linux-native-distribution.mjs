@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process';
 import {createInterface} from 'node:readline';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {appImageIsoNamespaceCommand} from './linux-appimage-iso-namespace.mjs';
 import {exportLinuxApplication} from '../packages/linux-native/dist/index.js';
 import {packageLinuxApplicationNative} from '../packages/linux-native/src/node.mjs';
 import {runPackagingTool} from '../packages/linux-native/src/native-distribution-tools.mjs';
@@ -42,9 +43,10 @@ async function instancePair(command,args,settings) {
 }
 
 export async function testLinuxNativeDistribution({architecture=process.arch,toolkit='gtk3',sysroot,reportDirectory=path.join(root,'reports/linux-native-distribution-'+toolkit+'-'+architecture),
-  flatpakUserDirectory,flatpakIconSandbox=true,execute=true,gtk=true,instances=true,signing=true,format='all'}={}) {
+  flatpakUserDirectory,flatpakIconSandbox=true,execute=true,gtk=true,instances=true,signing=true,format='all',isoMountNamespace='user'}={}) {
   assert.equal(process.platform,'linux');assert.ok(['x64','arm64'].includes(architecture));assert.ok(['gtk3','gtk4'].includes(toolkit));
   assert.ok(['all','appimage','flatpak'].includes(format));const formats=format==='all'?['appimage','flatpak']:[format];
+  assert.ok(['user','privileged'].includes(isoMountNamespace),'ISO mount namespace must be user or privileged');
   if(execute){
     assert.equal(process.arch,architecture,'Native package execution requires matching native hardware.');
     if(formats.includes('flatpak')){
@@ -150,13 +152,13 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
           const empty=path.join(work,'empty-host-iso');await fs.mkdir(empty);
           // This fixture masks host data only inside its own mount namespace.
           // No host files or production launcher settings are modified.
-          execution=await run('unshare',['--user','--map-root-user','--mount','--fork','/bin/sh','-ec',
-            'mount --bind "$1" /usr/share/xml/iso-codes; test ! -e /usr/share/xml/iso-codes/iso_639.xml; test ! -e /usr/share/xml/iso-codes/iso_639_3.xml; exec "$2" --appimage-extract-and-run',
-            'vb6-native-iso-fixture',empty,file],{env:appImageEnvironment});
+          const isolation=appImageIsoNamespaceCommand({emptyDirectory:empty,filename:file,environment:{...process.env,...appImageEnvironment},mode:isoMountNamespace});
+          execution=await run(isolation.command,isolation.args,{env:appImageEnvironment});
         }else execution=format==='appimage'?await runAppImage(file):await install(file,appId);
         assert.match(execution.stdout,/LINUX_GTK_FONT_CHOOSER_OK/);
         assert.doesNotMatch(execution.stderr,/(?:Failed to load|failed to load|Failed to open|failed to open).*iso_639|GLib-(?:GObject-)?(?:CRITICAL|ERROR)|Gtk-(?:CRITICAL|ERROR)/);
-        checks.push({format,nativeFontChooser:true,hostIsoDataMasked:format==='appimage'&&toolkit==='gtk4'});
+        checks.push({format,nativeFontChooser:true,hostIsoDataMasked:format==='appimage'&&toolkit==='gtk4',
+          ...(format==='appimage'&&toolkit==='gtk4'?{isoMountNamespace,...(isoMountNamespace==='privileged'?{applicationUid:process.getuid(),applicationGid:process.getgid()}:{})}:{})});
         console.log('PASS '+architecture+' '+toolkit+' '+format+': native FontChooser'+(format==='appimage'&&toolkit==='gtk4'?' with host ISO language files absent':''));
       }
     }
@@ -212,7 +214,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const options={};for(let index=2;index<process.argv.length;index+=2){
     const flag=process.argv[index],value=process.argv[index+1];
-    const fields={'--architecture':'architecture','--toolkit':'toolkit','--format':'format','--sysroot':'sysroot','--report':'reportDirectory','--flatpak-user-dir':'flatpakUserDirectory',
+    const fields={'--architecture':'architecture','--toolkit':'toolkit','--format':'format','--sysroot':'sysroot','--report':'reportDirectory','--flatpak-user-dir':'flatpakUserDirectory','--iso-mount-namespace':'isoMountNamespace',
       '--flatpak-icon-sandbox':'flatpakIconSandbox','--execute':'execute','--gtk':'gtk','--instances':'instances','--signing':'signing'};
     if(!Object.hasOwn(fields,flag)||value===undefined)throw new Error('Unknown or missing native distribution qualification option: '+flag);
     if(['--flatpak-icon-sandbox','--execute','--gtk','--instances','--signing'].includes(flag)){
