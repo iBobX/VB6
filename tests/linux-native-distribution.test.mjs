@@ -99,7 +99,8 @@ test('native packaging cancellation terminates owned descendants that ignore SIG
   finally {controller.abort();await rejected;}
   if(problem)throw problem;
   try {assert.match(await fs.readFile('/proc/'+child+'/status','utf8'),/^State:\s+Z\b/m,'Cancelled descendant is not running');}
-  catch(error){if(error.code!=='ENOENT')throw error;}
+  // Reaping can remove the entry before open (ENOENT) or during read (ESRCH).
+  catch(error){if(error.code!=='ENOENT'&&error.code!=='ESRCH')throw error;}
 });
 test('native packaging cancellation also terminates descendants after the leader closes its pipes',async t=>{
   if(process.platform!=='linux'){t.skip('Linux process-group and /proc semantics');return;}
@@ -118,7 +119,8 @@ test('native packaging cancellation also terminates descendants after the leader
   finally {controller.abort();await rejected;}
   if(problem)throw problem;
   try {assert.match(await fs.readFile('/proc/'+child+'/status','utf8'),/^State:\s+Z\b/m,'Redirected descendant is not running after cancellation settles');}
-  catch(error){if(error.code!=='ENOENT')throw error;}
+  // Reaping can remove the entry before open (ENOENT) or during read (ESRCH).
+  catch(error){if(error.code!=='ENOENT'&&error.code!=='ESRCH')throw error;}
 });
 test('native package writers reject path traversal and preserve reserved outputs',async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-native-writer-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
