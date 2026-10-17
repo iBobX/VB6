@@ -126,7 +126,7 @@ public:
 };
 struct Font {int id=0,charset=0,codepage=0;Text name;};
 struct StyleDefinition {int id=0,base=-1;bool character=false,additive=false;Text name;std::vector<Token> controls;};
-enum class Destination {Body,Fonts,Colors,Styles,Skip,Bullet,BulletText};
+enum class Destination {Body,Fonts,Colors,Styles,Skip,Bullet,BulletText,ListMarker,Field,FieldInstruction};
 struct State {
   GtkRtfStyle style;
   Destination destination=Destination::Body;
@@ -141,7 +141,10 @@ struct State {
   bool bulletKind=false;
   bool listMarker=false;
   Text bulletText;
-  int lineSpacing=0,lineMultiple=0;
+  bool markerAfter=false;
+  int tabAlignment=0;
+  std::shared_ptr<GtkRtfField> field;
+  bool ownsField=false,fieldResult=false;
 };
 int required(const Token& token,int minimum,int maximum) {
   if(!token.parameter||token.number<minimum||token.number>maximum)invalid("out-of-range \\"+token.name);
@@ -189,7 +192,7 @@ class Reader {
   }
   void defaults(State& target,bool characters=true,bool paragraphs=true) {
     if(characters){auto original=target.style.paragraph;target.style=GtkRtfStyle{};target.style.paragraph=original;target.font=-1;if(defaultFont>=0)selectFont(target,defaultFont);}
-    if(paragraphs){target.style.paragraph=GtkRtfParagraph{};target.lineSpacing=target.lineMultiple=0;}
+    if(paragraphs){auto interval=target.style.paragraph.defaultTab;target.style.paragraph=GtkRtfParagraph{};target.style.paragraph.defaultTab=interval;target.tabAlignment=0;}
   }
   void finishParagraph() {
     for(size_t i=paragraphFirst;i<result.runs.size();++i)result.runs[i].style.paragraph=paragraph;
@@ -197,8 +200,7 @@ class Reader {
   }
   void bodyText(const Text& value) {
     if(state.font<0&&defaultFont>=0)selectFont(state,defaultFont);
-    if(state.lineSpacing!=0&&!(state.lineSpacing==240&&state.lineMultiple==1))unsupported("sl (non-default line spacing)");
-    if(state.listMarker&&!state.style.paragraph.bullet)unsupported("pntext (list has no supported bullet definition)");
+    if(state.listMarker&&!state.style.paragraph.bullet&&!state.style.paragraph.numbering&&state.style.paragraph.marker.empty())invalid("list marker without a list definition");
     state.listMarker=false;
     paragraph=state.style.paragraph;
     auto append=[&](const Text& part) {
@@ -233,6 +235,10 @@ class Reader {
           colors.push_back(state.red<0&&state.green<0&&state.blue<0?-1:std::max(0,state.red)|(std::max(0,state.green)<<8)|(std::max(0,state.blue)<<16));state.red=state.green=state.blue=-1;
         }else if(ch!=u' '&&ch!=u'\t')invalid("text in color table");break;
       case Destination::BulletText:state.bulletText+=value;if(state.bulletText.size()>32)unsupported("pntxtb (custom list marker)");break;
+      case Destination::ListMarker:state.bulletText+=value;if(state.bulletText.size()>64)fail(7,"RTF list marker exceeds 64 UTF-16 units");break;
+      case Destination::FieldInstruction:
+        if(!state.field)invalid("field instruction outside a field");state.field->instruction+=value;if(state.field->instruction.size()>65536)fail(7,"RTF field instruction exceeds 65536 UTF-16 units");break;
+      case Destination::Field:for(auto ch:value)if(ch!=u' '&&ch!=u'\t')invalid("field text outside its result");break;
       case Destination::Bullet:for(auto ch:value)if(ch!=u' '&&ch!=u'\t')unsupported("pn (custom list content)");break;
       case Destination::Skip:break;
     }
@@ -294,11 +300,11 @@ class Reader {
     else if(word=="li")para.left=required(token,0,31680);else if(word=="ri")para.right=required(token,0,31680);else if(word=="fi")para.first=required(token,-31680,31680);
     else if(word=="sb")para.before=required(token,0,31680);else if(word=="sa")para.after=required(token,0,31680);
     else if(word=="ltrpar")para.rtl=false;else if(word=="rtlpar")para.rtl=true;
-    else if(word=="tx") {auto value=required(token,0,31680);if(para.tabs.size()>=64)fail(7,"RTF paragraph exceeds 64 tab stops");if(!para.tabs.empty()&&value<=para.tabs.back())invalid("tab stops are not increasing");para.tabs.push_back(value);}
-    else if(word=="tql"){} // GTK3's baseline Pango contract supports left tabs.
-    else if(word=="sl")target.lineSpacing=required(token,-31680,31680);
-    else if(word=="slmult")target.lineMultiple=required(token,0,1);
-    else if(word=="pnnone")para.bullet=false;
+    else if(word=="tx") {auto value=required(token,0,31680);if(para.tabs.size()>=64)fail(7,"RTF paragraph exceeds 64 tab stops");if(!para.tabs.empty()&&value<=para.tabs.back())invalid("tab stops are not increasing");para.tabs.push_back(value);para.tabAlignments.push_back(target.tabAlignment);target.tabAlignment=0;}
+    else if(word=="tql")target.tabAlignment=0;else if(word=="tqr")target.tabAlignment=1;else if(word=="tqc")target.tabAlignment=2;else if(word=="tqdec")target.tabAlignment=3;
+    else if(word=="sl")para.lineSpacing=required(token,-31680,31680);
+    else if(word=="slmult")para.lineMultiple=required(token,0,1);
+    else if(word=="pnnone"){para.bullet=false;para.numbering=0;para.marker.clear();}
     else return false;
     return true;
   }
@@ -321,7 +327,12 @@ class Reader {
       state.destination=name=="fonttbl"?Destination::Fonts:name=="colortbl"?Destination::Colors:Destination::Styles;
       state.fontEntry.reset();state.styleEntry.reset();state.ownsFont=state.ownsStyle=false;return;
     }
-    static const std::set<std::string> visibleDestinations={"pict","shppict","nonshppict","object","objdata","field","fldinst","fldrslt","footnote","endnote","annotation","header","headerl","headerr","headerf","footer","footerl","footerr","footerf","shp","shpinst","shptxt","do","listtable","listoverridetable","listtext","nesttableprops","mmath","mObj"};
+    if(name=="field") {if(!state.first||state.destination!=Destination::Body)invalid("misplaced field");if(result.fields.size()>=4096)fail(7,"RTF field limit exceeded");state.field=std::make_shared<GtkRtfField>();state.field->first=result.text.size();state.ownsField=true;state.fieldResult=false;state.destination=Destination::Field;return;}
+    if(name=="fldinst") {if(!state.first||!state.field||state.destination!=Destination::Field)invalid("misplaced field instruction");state.destination=Destination::FieldInstruction;return;}
+    if(name=="fldrslt") {if(!state.first||!state.field||state.destination!=Destination::Field)invalid("misplaced field result");state.destination=Destination::Body;state.fieldResult=true;return;}
+    if(state.destination==Destination::Field) {if(name=="fldlock")state.field->locked=!token.parameter||token.number;else if(name=="flddirty")state.field->dirty=!token.parameter||token.number;else if(name=="fldedit"||name=="fldpriv"){}else unsupported(name);return;}
+    if(state.destination==Destination::FieldInstruction) {if(name=="u"||name=="uc")unicode(token);else if(name=="tab")text(u"\t");else unsupported(name);return;}
+    static const std::set<std::string> visibleDestinations={"pict","shppict","nonshppict","object","objdata","footnote","endnote","annotation","header","headerl","headerr","headerf","footer","footerl","footerr","footerf","shp","shpinst","shptxt","do","listtable","listoverridetable","nesttableprops","mmath","mObj"};
     if(visibleDestinations.count(name))unsupported(name);
     static const std::set<std::string> metadataDestinations={"info","generator","xmlnstbl","revtbl","rsidtbl","filetbl","themedata","colorschememapping","latentstyles","datastore","docvar","bkmkstart","bkmkend","atnauthor","atnid"};
     if(state.first&&metadataDestinations.count(name)) {state.preserve=state.destination==Destination::Body;state.destination=Destination::Skip;return;}
@@ -352,17 +363,22 @@ class Reader {
       else {if(state.styleEntry->controls.size()>=256)fail(7,"RTF style has too many properties");state.styleEntry->controls.push_back(token);}
       return;
     }
-    if(name=="pntext") {if(!state.first)invalid("misplaced list marker");state.destination=Destination::Skip;state.listMarker=true;return;}
+    if(name=="pntext"||name=="listtext") {if(!state.first)invalid("misplaced list marker");state.destination=Destination::ListMarker;state.bulletText.clear();state.listMarker=true;return;}
     if(name=="pn") {if(!state.first)invalid("misplaced bullet definition");state.destination=Destination::Bullet;return;}
     if(state.destination==Destination::Bullet||state.destination==Destination::BulletText) {
-      if(name=="pnlvlblt")state.bulletKind=true;
-      else if(name=="pntxtb"){state.destination=Destination::BulletText;state.bulletText.clear();}
-      else if(name=="pntxta"){state.destination=Destination::BulletText;state.bulletText.clear();}
-      else if(name=="pnf"||name=="pnfs"||name=="pnindent"||name=="pnstart"||name=="pnhang"){}
+      if(name=="pnlvlblt"){state.bulletKind=true;state.style.paragraph.numbering=0;}
+      else if(name=="pndec")state.style.paragraph.numbering=1;
+      else if(name=="pnucrm")state.style.paragraph.numbering=2;else if(name=="pnlcrm")state.style.paragraph.numbering=3;
+      else if(name=="pnucltr")state.style.paragraph.numbering=4;else if(name=="pnlcltr")state.style.paragraph.numbering=5;
+      else if(name=="pntxtb"||name=="pntxta"){state.destination=Destination::BulletText;state.bulletText.clear();state.markerAfter=name=="pntxta";}
+      else if(name=="pnstart")state.style.paragraph.numberStart=required(token,1,1000000);
+      else if(name=="pnf")selectFont(state,required(token,0,INT32_MAX));
+      else if(name=="pnfs"||name=="pnindent"||name=="pnhang"||name=="pnlvlbody"||name=="pnlvlcont"||name=="pnprev"||name=="pnacross"||name=="pnql"||name=="pnqr"||name=="pnqc"){}
       else if(name=="u"||name=="uc")unicode(token);else unsupported(name);
       return;
     }
-    if(name=="ansi")state.codepage=1252;else if(name=="mac")state.codepage=10000;else if(name=="pc")state.codepage=437;else if(name=="pca")state.codepage=850;
+    if(name=="deftab")state.style.paragraph.defaultTab=required(token,1,31680);
+    else if(name=="ansi")state.codepage=1252;else if(name=="mac")state.codepage=10000;else if(name=="pc")state.codepage=437;else if(name=="pca")state.codepage=850;
     else if(name=="ansicpg")state.codepage=required(token,1,65535);
     else if(name=="deff"){if(!result.text.empty())invalid("misplaced default font");defaultFont=required(token,0,INT32_MAX);}
     else if(name=="u"||name=="uc")unicode(token);
@@ -403,7 +419,7 @@ public:
       if(finished){if(token.kind==Token::Bytes&&token.bytes.find_first_not_of(" \t")==std::string_view::npos)continue;invalid("trailing content after root group");}
       if(token.kind==Token::Open) {
         flush();skip=0;if(groups.size()>=256)fail(7,"RTF nesting exceeds 256 groups");
-        auto child=state;child.first=true;child.optional=false;child.preserve=false;child.groupStart=token.first;child.ownsFont=child.ownsStyle=false;child.alternatives=0;
+        auto child=state;child.first=true;child.optional=false;child.preserve=false;child.groupStart=token.first;child.ownsFont=child.ownsStyle=child.ownsField=false;child.alternatives=0;
         if(state.alternatives==1){child.destination=Destination::Skip;state.alternatives=2;}
         else if(state.alternatives==2){child.destination=Destination::Body;state.alternatives=3;}
         groups.push_back(state);state=std::move(child);continue;
@@ -415,15 +431,18 @@ public:
         if(state.ownsStyle&&state.styleEntry)invalid("style entry is missing its semicolon");
         if(state.alternatives&&state.alternatives!=3)invalid("incomplete Unicode alternative");
         auto child=std::move(state);state=std::move(groups.back());groups.pop_back();
+        if(child.fieldResult)state.fieldResult=true;
+        if(child.ownsField){if(!child.fieldResult)invalid("field has no visible result");child.field->last=result.text.size();gtkRtfValidateText(child.field->instruction);result.fields.push_back(*child.field);}
         if(child.listMarker)state.listMarker=true;
         if(child.preserve)result.metadata.push_back(input.substr(child.groupStart,token.last-child.groupStart));
-        if(child.destination==Destination::BulletText) {
-          auto marker=child.bulletText;
-          marker.erase(std::remove(marker.begin(),marker.end(),u'\t'),marker.end());
-          if(!marker.empty()&&marker!=u"\u2022"&&marker!=u"\u00b7")unsupported("pntxtb (custom list marker)");
-        }
+        if(child.destination==Destination::BulletText) {if(child.markerAfter)state.style.paragraph.numberAfter=child.bulletText;else state.style.paragraph.numberBefore=child.bulletText;}
+        if(child.destination==Destination::ListMarker) {auto marker=child.bulletText;while(!marker.empty()&&(marker.back()==u'\t'||marker.back()==u' '))marker.pop_back();state.style.paragraph.marker=std::move(marker);}
         if(child.destination==Destination::Bullet&&state.destination==Destination::Body) {
-          if(!child.bulletKind)unsupported("pn (numbered lists)");state.style.paragraph.bullet=true;paragraph=state.style.paragraph;
+          if(!child.bulletKind&&!child.style.paragraph.numbering)invalid("list definition has no numbering format");
+          state.style.paragraph.bullet=child.bulletKind;state.style.paragraph.numbering=child.style.paragraph.numbering;state.style.paragraph.numberStart=child.style.paragraph.numberStart;
+          state.style.paragraph.numberBefore=child.style.paragraph.numberBefore;state.style.paragraph.numberAfter=child.style.paragraph.numberAfter;
+          if(child.bulletKind&&!child.style.paragraph.numberBefore.empty())state.style.paragraph.marker=child.style.paragraph.numberBefore;
+          paragraph=state.style.paragraph;
         }
         if(groups.empty()){if(child.font<0&&defaultFont>=0)selectFont(child,defaultFont);result.emptyStyle=child.style;finished=true;break;}
         continue;
@@ -469,6 +488,21 @@ void encodedText(std::string& output,const Text& text,bool font=false,bool unico
 }
 
 GtkRtfDocument gtkRtfParse(const std::string& input) {return Reader(input).read();}
+Text gtkRtfListMarker(const GtkRtfParagraph& paragraph,int ordinal) {
+  if(!paragraph.marker.empty())return paragraph.marker;
+  if(paragraph.bullet)return paragraph.numberBefore.empty()?u"\u2022":paragraph.numberBefore;
+  if(!paragraph.numbering)return {};
+  int number=std::clamp(ordinal,1,1000000);Text value;
+  if(paragraph.numbering==2||paragraph.numbering==3) {
+    static const std::pair<int,const char*> numerals[]={{1000,"M"},{900,"CM"},{500,"D"},{400,"CD"},{100,"C"},{90,"XC"},{50,"L"},{40,"XL"},{10,"X"},{9,"IX"},{5,"V"},{4,"IV"},{1,"I"}};
+    if(number>3999)value=fromUTF8(std::to_string(number));
+    else for(const auto& entry:numerals)while(number>=entry.first){value+=fromUTF8(entry.second);number-=entry.first;}
+    if(paragraph.numbering==3)for(auto& ch:value)if(ch>=u'A'&&ch<=u'Z')ch+=u'a'-u'A';
+  }else if(paragraph.numbering==4||paragraph.numbering==5) {
+    do {--number;value.insert(value.begin(),char16_t((paragraph.numbering==4?u'A':u'a')+number%26));number/=26;}while(number);
+  }else value=fromUTF8(std::to_string(number));
+  return paragraph.numberBefore+value+paragraph.numberAfter;
+}
 std::string gtkRtfWrite(const GtkRtfDocument& document) {
   gtkRtfValidateText(document.text);
   if(document.runs.size()>GtkRtfMaxRuns)fail(7);
@@ -488,7 +522,12 @@ std::string gtkRtfWrite(const GtkRtfDocument& document) {
     const auto& para=style.paragraph;
     if(para.alignment<0||para.alignment>3||para.left<0||para.right<0||para.left>31680||para.right>31680||std::abs(int64_t(para.first))>31680||para.before<0||para.after<0||para.before>31680||para.after>31680)invalid("invalid paragraph geometry");
     if(para.lineExtra)unsupported("sl (non-default native line spacing)");
+    if(std::abs(int64_t(para.lineSpacing))>31680||para.lineMultiple<0||para.lineMultiple>1||(para.lineMultiple&&para.lineSpacing<0)||para.defaultTab<1||para.defaultTab>31680)invalid("invalid paragraph line spacing or default tabs");
+    if(para.numbering<0||para.numbering>5||para.numberStart<1||para.numberStart>1000000||(para.bullet&&para.numbering))invalid("invalid paragraph numbering");
+    for(const auto& value:{para.numberBefore,para.numberAfter,para.marker}){gtkRtfValidateText(value);if(value.size()>64||value.find_first_of(u"\r\n\t")!=Text::npos)invalid("invalid list marker");}
     if(para.tabs.size()>64)fail(7,"RTF paragraph exceeds 64 tab stops");
+    if(para.tabAlignments.size()>para.tabs.size())invalid("orphan tab alignments");
+    for(auto align:para.tabAlignments)if(align<0||align>3)invalid("invalid tab alignment");
     int previous=-1;for(auto stop:para.tabs){if(stop<0||stop>31680||stop<=previous)invalid("invalid tab stops");previous=stop;}
     if(!fonts.count({style.font,style.charset}))fonts[{style.font,style.charset}]=fonts.size();
     for(auto color:{style.foreground,style.background})if(color>=0&&!colors.count(color))colors[color]=colors.size()+1;
@@ -520,17 +559,44 @@ std::string gtkRtfWrite(const GtkRtfDocument& document) {
       output+=para.alignment==1?"\\qr":para.alignment==2?"\\qc":para.alignment==3?"\\qj":"\\ql";
       if(para.left)control("li",para.left);if(para.right)control("ri",para.right);if(para.first)control("fi",para.first);
       if(para.before)control("sb",para.before);if(para.after)control("sa",para.after);if(para.rtl)output+="\\rtlpar";
-      for(auto tab:para.tabs)control("tx",tab);
-      if(para.bullet)output+="{\\*\\pn\\pnlvlblt{\\pntxtb\\u8226?}}";
+      if(para.lineSpacing){control("sl",para.lineSpacing);control("slmult",para.lineMultiple);}
+      if(para.defaultTab!=720)control("deftab",para.defaultTab);
+      for(size_t i=0;i<para.tabs.size();++i){const auto align=i<para.tabAlignments.size()?para.tabAlignments[i]:0;if(align)output+=align==1?"\\tqr":align==2?"\\tqc":"\\tqdec";control("tx",para.tabs[i]);}
+      if(!para.marker.empty()){output+="{\\pntext ";encodedText(output,para.marker);output+="\\tab}";}
+      if(para.bullet||para.numbering) {
+        output+="{\\*\\pn";
+        if(para.bullet)output+="\\pnlvlblt";
+        else {static const char* types[]={"","\\pndec","\\pnucrm","\\pnlcrm","\\pnucltr","\\pnlcltr"};output+="\\pnlvlbody";output+=types[para.numbering];control("pnstart",para.numberStart);}
+        if(!para.numberBefore.empty()){output+="{\\pntxtb ";encodedText(output,para.numberBefore);output+='}';}
+        if(!para.numberAfter.empty()){output+="{\\pntxta ";encodedText(output,para.numberAfter);output+='}';}
+        output+='}';
+      }
     }
     if(output.back()!='}')output+=' ';
   };
   size_t previous=0;
   for(const auto& run:document.runs) {
     if(run.first!=previous||run.last<=run.first||run.last>document.text.size())invalid("non-contiguous formatting model");
-    formatting(run.style);encodedText(output,document.text.substr(run.first,run.last-run.first),false,!byteCharset(run.style.charset));previous=run.last;
+    previous=run.last;
   }
   if(previous!=document.text.size())invalid("text without formatting runs");
+  auto fields=document.fields;if(fields.size()>4096)fail(7,"RTF field limit exceeded");
+  std::stable_sort(fields.begin(),fields.end(),[](const auto& a,const auto& b){return a.first<b.first||(a.first==b.first&&a.last>b.last);});
+  for(const auto& field:fields) {if(field.first>field.last||field.last>document.text.size()||field.instruction.size()>65536)invalid("invalid field range");gtkRtfValidateText(field.instruction);for(auto offset:{field.first,field.last})if(offset<document.text.size()&&document.text[offset]>=0xdc00&&document.text[offset]<=0xdfff)invalid("field splits Unicode scalar");}
+  size_t at=0,runIndex=0,fieldIndex=0;std::vector<size_t> ends;
+  for(;;) {
+    while(!ends.empty()&&ends.back()==at){output+="}}";ends.pop_back();}
+    while(fieldIndex<fields.size()&&fields[fieldIndex].first==at) {
+      const auto& field=fields[fieldIndex++];if(!ends.empty()&&field.last>ends.back())invalid("overlapping fields");
+      output+="{\\field";if(field.locked)output+="\\fldlock";if(field.dirty)output+="\\flddirty";output+="{\\*\\fldinst ";encodedText(output,field.instruction);output+="}{\\fldrslt ";
+      if(field.last==at)output+="}}";else {if(ends.size()>=32)fail(7,"RTF field nesting exceeds 32");ends.push_back(field.last);}
+    }
+    if(at==document.text.size())break;
+    while(runIndex<document.runs.size()&&document.runs[runIndex].last<=at)++runIndex;
+    const auto& run=document.runs.at(runIndex);auto end=run.last;if(fieldIndex<fields.size())end=std::min(end,fields[fieldIndex].first);if(!ends.empty())end=std::min(end,ends.back());
+    if(end<=at)invalid("overlapping field boundaries");formatting(run.style);encodedText(output,document.text.substr(at,end-at),false,!byteCharset(run.style.charset));at=end;
+  }
+  if(!ends.empty()||fieldIndex!=fields.size())invalid("unclosed field model");
   formatting(document.emptyStyle,document.text.empty()||gtkRtfParagraphEnd(document.text,document.text.size()-1));
   output+='}';if(output.size()>GtkRtfMaxBytes)fail(7,"Serialized RTF exceeds 16 MiB");return output;
 }

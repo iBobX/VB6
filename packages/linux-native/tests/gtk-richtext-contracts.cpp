@@ -18,6 +18,7 @@ void same(const GtkRtfDocument& a,const GtkRtfDocument& b) {
   if(a.text!=b.text)throw std::runtime_error("RTF roundtrip changed Unicode text: ["+toUTF8(a.text)+"] -> ["+toUTF8(b.text)+"]");
   for(size_t i=0;i<a.text.size();++i)if(at(a,i)!=at(b,i))throw std::runtime_error("RTF roundtrip changed attributes at UTF-16 offset "+std::to_string(i));
   require(a.emptyStyle==b.emptyStyle,"RTF roundtrip changed trailing insertion style");
+  require(a.fields==b.fields,"RTF roundtrip changed inert field instructions or ranges");
 }
 void parser() {
   const std::string sample=R"({\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Arial;}{\f1\fmodern Courier New;}}{\colortbl;\red255\green0\blue0;\red0\green255\blue0;}\pard\f0\fs20 plain {\b\i\cf1\highlight2 BOLD} tail\par\qc\li720\fi-360\ri180\sb120\sa240\tx720\tx1440\f1\fs25\uldb Center\tab two\line soft\par\pard\protect\v hidden\v0\protect0\up6 raised\up0\super super\nosupersub})";
@@ -40,6 +41,15 @@ void parser() {
   require(alternatives.text==u"Unicode\u03b1","RTF Unicode alternative destination was duplicated");
   auto bullet=gtkRtfParse(R"({\rtf1{\pntext\u8226?\tab}{\*\pn\pnlvlblt{\pntxtb\u8226?}}\li720\fi-360 item\par})");
   require(bullet.text==u"item\n"&&at(bullet,0).paragraph.bullet,"RTF bullet list fallback leaked into text");same(bullet,gtkRtfParse(gtkRtfWrite(bullet)));
+  auto numbers=gtkRtfParse(R"({\rtf1{\*\pn\pnlvlbody\pnucrm\pnstart4{\pntxtb (}{\pntxta )}}first\par second})");
+  require(at(numbers,0).paragraph.numbering==2&&gtkRtfListMarker(at(numbers,0).paragraph,4)==u"(IV)","Numbered paragraphs lost their numbering format or affixes");same(numbers,gtkRtfParse(gtkRtfWrite(numbers)));
+  auto custom=gtkRtfParse(R"({\rtf1{\listtext 2.3.\tab}section})");require(custom.text==u"section"&&at(custom,0).paragraph.marker==u"2.3.","Explicit multilevel list marker was discarded");same(custom,gtkRtfParse(gtkRtfWrite(custom)));
+  auto spacing=gtkRtfParse(R"({\rtf1\deftab360\sl480\slmult1\tqr\tx720\tqc\tx1440\tqdec\tx2160 first\tab second\tab 12.34\par last})");
+  require(at(spacing,0).paragraph.tabAlignments==std::vector<int>({1,2,3})&&at(spacing,0).paragraph.lineSpacing==480&&at(spacing,0).paragraph.lineMultiple==1&&at(spacing,0).paragraph.defaultTab==360,"RTF aligned tabs or multiple line spacing were discarded");same(spacing,gtkRtfParse(gtkRtfWrite(spacing)));
+  auto fields=gtkRtfParse(R"({\rtf1 before {\field\fldlock{\*\fldinst HYPERLINK "https://example.org"}{\fldrslt\b Example}} after {\field{\*\fldinst LINK external-file}{\fldrslt cached}}})");
+  require(fields.text==u"before Example after cached"&&fields.fields.size()==2&&fields.fields[0].first==7&&fields.fields[0].last==14&&fields.fields[0].locked&&fields.fields[1].instruction==u"LINK external-file","Inert field results or instructions were lost");same(fields,gtkRtfParse(gtkRtfWrite(fields)));
+  auto nestedFields=gtkRtfParse(R"({\rtf1{\field{\*\fldinst IF 1}{\fldrslt a{\field{\*\fldinst PAGE}{\fldrslt 2}}z}}})");same(nestedFields,gtkRtfParse(gtkRtfWrite(nestedFields)));
+  error(380,[&]{gtkRtfParse(R"({\rtf1{\field{\*\fldinst PAGE}}})");});
   auto symbol=gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}{\f1\fcharset42 Custom;}}\f0\u65?\u945?\f1\u66?})");
   require(symbol.text==u"A\u03b1B"&&at(symbol,0).charset==2&&at(symbol,2).charset==42,"Explicit Unicode with legacy font charset was lost");same(symbol,gtkRtfParse(gtkRtfWrite(symbol)));
   error(453,[&]{gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0 raw})");});
@@ -50,7 +60,7 @@ void parser() {
   auto info=gtkRtfParse(R"({\rtf1{\info{\title Example}{\author Test}}{\*\generator VB6;}\paperw12240\paperh15840 text})");
   auto saved=gtkRtfWrite(info);require(saved.find("\\title Example")!=std::string::npos&&saved.find("\\paperw12240")!=std::string::npos,"RTF metadata was not preserved");
   for(const std::string input:{"", "{\\rtf1", "{\\rtf1 ok}}", "{\\rtf1 ok}garbage", "{\\rtf1\\'xy}", "{\\rtf1\\u-10179?}", "{\\rtf1\\bin999 xx}", "{\\rtf1\\cf20 x}", "{\\rtf1\\fs99999999999 x}", "{\\rtf1{\\stylesheet{\\s1\\sbasedon2 A;}{\\s2\\sbasedon1 B;}}\\s1 x}"})error(380,[&]{gtkRtfParse(input);});
-  for(const std::string input:{R"({\rtf1{\pict\pngblip deadbeef}})",R"({\rtf1{\object\objdata 00}})",R"({\rtf1{\field{\*\fldinst LINK test}{\fldrslt display}}})",R"({\rtf1\trowd\cell text})",R"({\rtf1\ulw text})",R"({\rtf1{\*\unknownFeature ignored}})",R"({\rtf1\sl480\slmult1 double})",R"({\rtf1\tqr\tx720 right})"})error(453,[&]{gtkRtfParse(input);});
+  for(const std::string input:{R"({\rtf1{\pict\pngblip deadbeef}})",R"({\rtf1{\object\objdata 00}})",R"({\rtf1\trowd\cell text})",R"({\rtf1\ulw text})",R"({\rtf1{\*\unknownFeature ignored}})"})error(453,[&]{gtkRtfParse(input);});
   error(7,[&]{gtkRtfParse("{\\rtf1"+std::string(256,'{')+"x"+std::string(257,'}'));});
   error(7,[&]{gtkRtfParse(std::string(GtkRtfMaxBytes+1,'x'));});
   error(380,[&]{gtkRtfParse(std::string("{\\rtf1 a")+'\0'+"b}");});
@@ -72,8 +82,13 @@ int main() {
     editor->set(runtime,"selitalic",Value::boolean(true));editor->set(runtime,"selunderline",Value::boolean(true));editor->set(runtime,"selstrikethru",Value::boolean(true));
     editor->set(runtime,"selfontsize",Value::real(12.5));editor->set(runtime,"selcolor",Value::integer(255));editor->set(runtime,"selbackcolor",Value::integer(65280));
     require(editor->editSelection()==std::make_pair(size_t(6),size_t(4)),"Formatting disturbed UTF-16 selection");
-    auto* buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));GtkTextIter iter;gtk_text_buffer_get_iter_at_offset(buffer,&iter,6);auto* attributes=gtk_text_attributes_new();gtk_text_iter_get_attributes(&iter,attributes);
+    auto* buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));GtkTextIter iter;gtk_text_buffer_get_iter_at_offset(buffer,&iter,6);
+#if GTK_MAJOR_VERSION < 4
+    auto* attributes=gtk_text_attributes_new();gtk_text_iter_get_attributes(&iter,attributes);
     require(pango_font_description_get_weight(attributes->font)==PANGO_WEIGHT_BOLD&&attributes->appearance.underline==PANGO_UNDERLINE_SINGLE,"VB formatting did not reach actual GTK text tags");gtk_text_attributes_unref(attributes);
+#else
+    auto* actualTags=gtk_text_iter_get_tags(&iter);require(actualTags,"VB formatting did not create native text tags");int weight=0,underline=0;g_object_get(actualTags->data,"weight",&weight,"underline",&underline,nullptr);g_slist_free(actualTags);require(weight==PANGO_WEIGHT_BOLD&&underline==PANGO_UNDERLINE_SINGLE,"VB formatting did not reach actual GTK4 text tags");
+#endif
     auto fragment=editor->get(runtime,"selrtf");editor->editSelect(0,10);require(editor->get(runtime,"selbold").type==Type::Null,"Mixed rich selection did not return Null");
     editor->set(runtime,"text",Value::string(u"# tail"));editor->editSelect(0,1);auto parsedFragment=gtkRtfParse(gtkRtfBytes(fragment.string()));require(parsedFragment.text==u"BOLD","Selected fragment parser text differs");editor->set(runtime,"selrtf",fragment);
     require(editor->editText()==u"BOLD tail"&&editor->editSelection()==std::make_pair(size_t(4),size_t(0)),"SelRTF replacement lost text or caret position");
@@ -101,6 +116,17 @@ int main() {
     editor->editSelect(6,1);require(editor->get(runtime,"selalignment").integral()==0,"Paragraph formatting escaped to the next paragraph");
     editor->set(runtime,"selbullet",Value::boolean(true));auto document=gtkRichSnapshot(*editor);same(document,gtkRtfParse(gtkRtfWrite(document)));
     host.formCall(form,"show",{});host.pump(); // Exercise the native bullet drawing path.
+    editor->set(runtime,"textrtf",Value::string(u"{\\rtf1\\sl480\\slmult1\\tqr\\tx1440 A\\tab B\\par C}"));
+    buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_get_start_iter(buffer,&iter);auto* aligned=gtk_text_iter_get_tags(&iter);require(aligned,"Native spacing tag missing");PangoTabArray* tabs=nullptr;g_object_get(aligned->data,"tabs",&tabs,nullptr);PangoTabAlign alignment;int position;pango_tab_array_get_tab(tabs,0,&alignment,&position);require(alignment==PANGO_TAB_RIGHT&&position==96,"RTF tab alignment did not reach Pango");pango_tab_array_free(tabs);
+#if GTK_MAJOR_VERSION >= 4
+    float lineHeight=0;g_object_get(aligned->data,"line-height",&lineHeight,nullptr);require(lineHeight>1.99f&&lineHeight<2.01f,"RTF double spacing did not reach GTK4 line-height");
+#else
+    int lineExtra=0;g_object_get(aligned->data,"pixels-inside-wrap",&lineExtra,nullptr);require(lineExtra>0,"RTF double spacing did not reach native wrapped-line geometry");
+#endif
+    g_slist_free(aligned);same(gtkRichSnapshot(*editor),gtkRtfParse(gtkRtfWrite(gtkRichSnapshot(*editor))));
+    editor->set(runtime,"textrtf",Value::string(u"{\\rtf1 before {\\field{\\*\\fldinst HYPERLINK \"https://example.org\"}{\\fldrslt value}} tail}"));editor->editSelect(10,0);buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_insert_at_cursor(buffer,"-edit-",-1);host.check();
+    auto changedField=gtkRichSnapshot(*editor);require(changedField.fields.size()==1&&changedField.fields[0].first==7&&changedField.fields[0].last==18&&changedField.fields[0].instruction==u"HYPERLINK \"https://example.org\"","Native editing did not track the field result marks");same(changedField,gtkRtfParse(gtkRtfWrite(changedField)));
+    editor->editSelect(7,11);auto fieldFragment=editor->get(runtime,"selrtf");editor->set(runtime,"text",Value::string(u"paste: "));editor->editSelect(7,0);editor->set(runtime,"selrtf",fieldFragment);require(gtkRichSnapshot(*editor).fields.size()==1,"SelRTF lost a complete field wrapper");
     editor->set(runtime,"text",Value::string(u"locked"));editor->editSelect(0,6);editor->set(runtime,"selprotected",Value::boolean(true));
     buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_get_iter_at_offset(buffer,&iter,2);require(!gtk_text_buffer_insert_interactive(buffer,&iter,"x",-1,TRUE),"SelProtected did not prevent native interactive edits");
     editor->set(runtime,"textrtf",preserved);auto before=editor->get(runtime,"textrtf").string();

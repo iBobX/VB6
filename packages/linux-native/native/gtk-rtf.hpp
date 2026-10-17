@@ -14,9 +14,13 @@ struct GtkRtfParagraph {
   int alignment = 0; // VB: left, right, center, justified.
   int left = 0, right = 0, first = 0; // RTF twips; first is relative to left.
   int before = 0, after = 0, lineExtra = 0;
+  int lineSpacing = 0, lineMultiple = 0, defaultTab = 720;
   bool rtl = false, bullet = false;
   std::vector<int> tabs;
-  auto key() const { return std::tie(alignment,left,right,first,before,after,lineExtra,rtl,bullet,tabs); }
+  std::vector<int> tabAlignments; // Pango/RTF: left, right, center, decimal.
+  int numbering = 0, numberStart = 1; // 0 none, 1 decimal, 2/3 Roman, 4/5 alphabetic.
+  Text numberBefore, numberAfter = u".", marker;
+  auto key() const { return std::tie(alignment,left,right,first,before,after,lineExtra,lineSpacing,lineMultiple,defaultTab,rtl,bullet,tabs,tabAlignments,numbering,numberStart,numberBefore,numberAfter,marker); }
   bool operator==(const GtkRtfParagraph& value) const { return key()==value.key(); }
   bool operator!=(const GtkRtfParagraph& value) const { return !(*this==value); }
 };
@@ -39,6 +43,13 @@ struct GtkRtfRun {
   size_t first = 0, last = 0; // UTF-16 boundaries in document.text.
   GtkRtfStyle style;
 };
+struct GtkRtfField {
+  size_t first = 0, last = 0;
+  Text instruction; // Inert field source; never evaluated or used for I/O.
+  bool locked = false, dirty = false;
+  auto key() const { return std::tie(first,last,instruction,locked,dirty); }
+  bool operator==(const GtkRtfField& other) const { return key()==other.key(); }
+};
 struct GtkRtfDocument {
   Text text;
   std::vector<GtkRtfRun> runs;
@@ -46,6 +57,7 @@ struct GtkRtfDocument {
   // Non-content document properties (page geometry, view hints, metadata) are
   // retained for whole-document saves; they never import files or active objects.
   std::vector<std::string> metadata;
+  std::vector<GtkRtfField> fields;
 };
 
 bool gtkRtfParagraphEnd(const Text&, size_t position) noexcept;
@@ -55,4 +67,5 @@ GtkRtfDocument gtkRtfParse(const std::string&);
 std::string gtkRtfWrite(const GtkRtfDocument&);
 std::string gtkRtfBytes(const Text&);
 Text gtkRtfDecode(const std::string&, int codepage);
+Text gtkRtfListMarker(const GtkRtfParagraph&, int ordinal);
 }

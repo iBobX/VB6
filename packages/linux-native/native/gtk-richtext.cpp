@@ -12,6 +12,8 @@ struct GtkRichText {
   GtkRtfStyle typing;
   GtkRtfStyle trailing;
   std::vector<std::string> metadata;
+  struct Field {GtkTextMark* first=nullptr;GtkTextMark* last=nullptr;GtkRtfField value;};
+  std::vector<Field> fields;
   std::pair<int,int> selection{-1,-1};
   size_t operationDepth=0,userActionDepth=0;
   bool dirty=false,typingOverride=false,selecting=false;
@@ -66,6 +68,7 @@ GtkRtfStyle nativeStyle(GtkControl& c,const GtkTextIter& iter) {
     return value;
   };
   if(!foreign)return paragraphStyle(std::move(base));
+#if GTK_MAJOR_VERSION < 4
   // GTK clipboard/DND can introduce ordinary native text tags. Read their
   // effective properties so a later RTF save does not discard their formatting.
   auto* attributes=gtk_text_attributes_new();gtk_text_iter_get_attributes(&iter,attributes);
@@ -89,8 +92,38 @@ GtkRtfStyle nativeStyle(GtkControl& c,const GtkTextIter& iter) {
   para.alignment=attributes->justification==GTK_JUSTIFY_RIGHT?1:attributes->justification==GTK_JUSTIFY_CENTER?2:attributes->justification==GTK_JUSTIFY_FILL?3:0;
   para.left=attributes->left_margin*15;para.right=attributes->right_margin*15;para.first=attributes->indent*15;
   para.before=attributes->pixels_above_lines*15;para.after=attributes->pixels_below_lines*15;para.lineExtra=attributes->pixels_inside_wrap*15;
-  para.rtl=attributes->direction==GTK_TEXT_DIR_RTL;para.tabs.clear();
-  if(attributes->tabs)for(int i=0;i<pango_tab_array_get_size(attributes->tabs);++i){PangoTabAlign align;int position;pango_tab_array_get_tab(attributes->tabs,i,&align,&position);if(align!=PANGO_TAB_LEFT)fail(453,"Native rich text contains an unsupported tab alignment");para.tabs.push_back(int(std::lround(position*15.0/(pango_tab_array_get_positions_in_pixels(attributes->tabs)?1:PANGO_SCALE))));}
+  para.rtl=attributes->direction==GTK_TEXT_DIR_RTL;para.tabs.clear();para.tabAlignments.clear();
+  if(attributes->tabs)for(int i=0;i<pango_tab_array_get_size(attributes->tabs);++i){PangoTabAlign align;int position;pango_tab_array_get_tab(attributes->tabs,i,&align,&position);if(align<PANGO_TAB_LEFT||align>PANGO_TAB_DECIMAL)fail(453,"Native rich text contains an unsupported tab alignment");para.tabs.push_back(int(std::lround(position*15.0/(pango_tab_array_get_positions_in_pixels(attributes->tabs)?1:PANGO_SCALE))));para.tabAlignments.push_back(int(align));}
+#else
+  // GtkTextAttributes was removed in GTK4. Fold explicitly set properties in
+  // priority order, including ordinary native clipboard tags, through GObject.
+  list=gtk_text_iter_get_tags(&iter);std::vector<GtkTextTag*> ordered;
+  for(auto* item=list;item;item=item->next)ordered.push_back(GTK_TEXT_TAG(item->data));g_slist_free(list);
+  std::sort(ordered.begin(),ordered.end(),[](auto* a,auto* b){return gtk_text_tag_get_priority(a)<gtk_text_tag_get_priority(b);});base=defaults(c);
+  for(auto* value:ordered) {
+    if(auto* style=static_cast<GtkRtfStyle*>(g_object_get_data(G_OBJECT(value),"vb6-rich-style"))){base=*style;continue;}
+    auto set=[&](const char* name){std::string property=std::string(name)+"-set";if(!g_object_class_find_property(G_OBJECT_GET_CLASS(value),property.c_str()))return false;gboolean enabled=FALSE;g_object_get(value,property.c_str(),&enabled,nullptr);return bool(enabled);};
+    auto integer=[&](const char* name){int number=0;g_object_get(value,name,&number,nullptr);return number;};
+    auto flag=[&](const char* name){gboolean enabled=FALSE;g_object_get(value,name,&enabled,nullptr);return bool(enabled);};
+    if(set("family")){gchar* name=nullptr;g_object_get(value,"family",&name,nullptr);if(name)base.font=fromUTF8(name);g_free(name);}
+    if(set("size")){double size=0;g_object_get(value,"size-points",&size,nullptr);base.size=size;}
+    if(set("scale")){double scale=1;g_object_get(value,"scale",&scale,nullptr);base.size*=scale;}
+    if(set("weight"))base.bold=integer("weight")>=PANGO_WEIGHT_SEMIBOLD;
+    if(set("style"))base.italic=integer("style")!=PANGO_STYLE_NORMAL;
+    if(set("variant"))base.smallCaps=integer("variant")==PANGO_VARIANT_SMALL_CAPS;
+    if(set("underline")){auto underline=integer("underline");if(underline!=PANGO_UNDERLINE_NONE&&underline!=PANGO_UNDERLINE_SINGLE&&underline!=PANGO_UNDERLINE_DOUBLE&&underline!=PANGO_UNDERLINE_ERROR)fail(453,"Native underline cannot be preserved as RTF");base.underline=underline==PANGO_UNDERLINE_DOUBLE?2:underline==PANGO_UNDERLINE_ERROR?3:underline!=PANGO_UNDERLINE_NONE;}
+    if(set("strikethrough"))base.strike=flag("strikethrough");if(set("invisible"))base.hidden=flag("invisible");if(set("editable"))base.protectedText=!flag("editable");
+    for(auto name:{"foreground","background"})if(set(name)){GdkRGBA* color=nullptr;g_object_get(value,(std::string(name)+"-rgba").c_str(),&color,nullptr);if(color){auto copy=*color;gdk_rgba_free(color);if(copy.alpha!=1)fail(453,"Native translucent text colors cannot be preserved as RTF");(name[0]=='f'?base.foreground:base.background)=gtkColorValue(copy);}}
+    if(set("rise")){base.rise=int(std::lround(integer("rise")*15.0/PANGO_SCALE));base.script=0;}
+    if(set("letter-spacing"))base.spacing=int(std::lround(integer("letter-spacing")*15.0/PANGO_SCALE));
+    auto& para=base.paragraph;
+    if(set("justification")){auto align=integer("justification");para.alignment=align==GTK_JUSTIFY_RIGHT?1:align==GTK_JUSTIFY_CENTER?2:align==GTK_JUSTIFY_FILL?3:0;}
+    if(set("left-margin"))para.left=integer("left-margin")*15;if(set("right-margin"))para.right=integer("right-margin")*15;if(set("indent"))para.first=integer("indent")*15;
+    if(set("pixels-above-lines"))para.before=integer("pixels-above-lines")*15;if(set("pixels-below-lines"))para.after=integer("pixels-below-lines")*15;if(set("pixels-inside-wrap"))para.lineExtra=integer("pixels-inside-wrap")*15;
+    if(set("line-height")){float scale=0;g_object_get(value,"line-height",&scale,nullptr);para.lineSpacing=int(std::lround(scale*240));para.lineMultiple=1;}
+    if(set("tabs")){PangoTabArray* tabs=nullptr;g_object_get(value,"tabs",&tabs,nullptr);para.tabs.clear();para.tabAlignments.clear();if(tabs){for(int i=0;i<pango_tab_array_get_size(tabs);++i){PangoTabAlign align;int position;pango_tab_array_get_tab(tabs,i,&align,&position);para.tabs.push_back(int(std::lround(position*15.0/(pango_tab_array_get_positions_in_pixels(tabs)?1:PANGO_SCALE))));para.tabAlignments.push_back(int(align));}pango_tab_array_free(tabs);}}
+  }
+#endif
   return paragraphStyle(std::move(base));
 }
 GtkRtfStyle insertionStyle(GtkControl& c,int offset) {
@@ -110,7 +143,9 @@ void validateStyle(const GtkRtfStyle& style) {
   const auto& para=style.paragraph;
   if(para.alignment<0||para.alignment>3||para.left<0||para.right<0||para.left>31680||para.right>31680||std::abs(para.first)>31680||para.before<0||para.after<0||para.before>31680||para.after>31680)fail(380,"Invalid rich paragraph geometry");
   if(para.lineExtra)fail(453,"Non-default native rich line spacing cannot be represented losslessly as RTF");
-  if(para.bullet&&para.rtl)fail(453,"RTL rich bullet paragraphs are unavailable");
+  if(std::abs(int64_t(para.lineSpacing))>31680||para.lineMultiple<0||para.lineMultiple>1||(para.lineMultiple&&para.lineSpacing<0))fail(380,"Invalid rich line spacing");
+  if(para.defaultTab<1||para.defaultTab>31680||para.tabAlignments.size()>para.tabs.size())fail(380,"Invalid rich tab geometry");
+  for(auto alignment:para.tabAlignments)if(alignment<0||alignment>3)fail(380,"Invalid rich tab alignment");
   if(para.tabs.size()>64)fail(7,"Rich paragraph exceeds 64 tab stops");
   int previous=-1;for(int tab:para.tabs){if(tab<0||tab>31680||tab<=previous)fail(380,"Rich tab stops must be increasing and between 0 and 31680 twips");previous=tab;}
 }
@@ -122,7 +157,7 @@ GtkTextTag* tag(GtkControl& c,GtkRichText& state,const GtkRtfStyle& style) {
   auto back=gtkColor(style.background<0?int64_t(c.number("backcolor",0xffffff)):style.background);
   const auto& para=style.paragraph;
   int left=para.left,indent=para.first;
-  if(para.bullet){left=std::max(360,left);indent=0;}
+  if(para.bullet||para.numbering||!para.marker.empty()){left=std::max(360,left);indent=0;}
   auto underline=style.underline==2?PANGO_UNDERLINE_DOUBLE:style.underline==3?PANGO_UNDERLINE_ERROR:style.underline?PANGO_UNDERLINE_SINGLE:PANGO_UNDERLINE_NONE;
   const auto rise=int(std::lround((style.rise/15.0+style.script*style.size*4.0/9)*PANGO_SCALE));
   g_object_set(value,"family",toUTF8(style.font).c_str(),"size-points",style.size,"weight",style.bold?PANGO_WEIGHT_BOLD:PANGO_WEIGHT_NORMAL,
@@ -133,8 +168,19 @@ GtkTextTag* tag(GtkControl& c,GtkRichText& state,const GtkRtfStyle& style) {
     "pixels-above-lines",pixels(para.before),"pixels-below-lines",pixels(para.after),"pixels-inside-wrap",0,
     "justification",para.alignment==1?GTK_JUSTIFY_RIGHT:para.alignment==2?GTK_JUSTIFY_CENTER:para.alignment==3?GTK_JUSTIFY_FILL:GTK_JUSTIFY_LEFT,
     "direction",para.rtl?GTK_TEXT_DIR_RTL:GTK_TEXT_DIR_LTR,nullptr);
+  if(para.lineSpacing) {
+    auto* font=pango_font_description_new();pango_font_description_set_family(font,toUTF8(style.font).c_str());pango_font_description_set_size(font,int(style.size*PANGO_SCALE));pango_font_description_set_weight(font,style.bold?PANGO_WEIGHT_BOLD:PANGO_WEIGHT_NORMAL);
+    auto* metrics=pango_context_get_metrics(gtk_widget_get_pango_context(c.widget),font,nullptr);const double natural=(pango_font_metrics_get_ascent(metrics)+pango_font_metrics_get_descent(metrics))/double(PANGO_SCALE);pango_font_metrics_unref(metrics);pango_font_description_free(font);
+    const double requested=para.lineMultiple?natural*para.lineSpacing/240.0:para.lineSpacing>0?std::max(natural,para.lineSpacing/15.0):-para.lineSpacing/15.0;
+#if GTK_MAJOR_VERSION >= 4
+    g_object_set(value,"line-height",float(requested/std::max(1.0,natural)),nullptr);
+#else
+    if(requested+0.01<natural)fail(453,"Compressed or exact small line heights require the GTK4 RichTextBox backend");
+    const int extra=int(std::lround(requested-natural));g_object_set(value,"pixels-inside-wrap",extra,"pixels-above-lines",pixels(para.before)+extra/2,"pixels-below-lines",pixels(para.after)+extra-extra/2,nullptr);
+#endif
+  }
   auto count=para.tabs.empty()?64:int(para.tabs.size());auto* tabs=pango_tab_array_new(count,TRUE);
-  for(int i=0;i<count;++i)pango_tab_array_set_tab(tabs,i,PANGO_TAB_LEFT,pixels(para.tabs.empty()?(i+1)*720:para.tabs[size_t(i)]));
+  for(int i=0;i<count;++i){auto alignment=size_t(i)<para.tabAlignments.size()?para.tabAlignments[size_t(i)]:0;pango_tab_array_set_tab(tabs,i,PangoTabAlign(alignment),pixels(para.tabs.empty()?(i+1)*para.defaultTab:para.tabs[size_t(i)]));if(alignment==3)pango_tab_array_set_decimal_point(tabs,i,'.');}
   g_object_set(value,"tabs",tabs,nullptr);pango_tab_array_free(tabs);
   g_object_set_data_full(G_OBJECT(value),"vb6-rich-style",new GtkRtfStyle(style),+[](gpointer data){delete static_cast<GtkRtfStyle*>(data);});
   state.tags.emplace(style,value);return value;
@@ -178,7 +224,11 @@ void connect(GtkControl& c,GtkRichText& state) {
     if(mark!=gtk_text_buffer_get_insert(buffer)&&mark!=gtk_text_buffer_get_selection_bound(buffer))return;
     if(!state.selectionIdle)state.selectionIdle=g_idle_add_full(G_PRIORITY_DEFAULT_IDLE,+[](gpointer payload)->gboolean {gtkEvent(payload,[](GtkControl& control){auto state=control.richText;if(state){state->selectionIdle=0;gtkRichSelectionChanged(control);}});return G_SOURCE_REMOVE;},new std::weak_ptr<GtkControl>(owner.self()),+[](gpointer payload){delete static_cast<std::weak_ptr<GtkControl>*>(payload);});
   });}),c.self(),true);
+#if GTK_MAJOR_VERSION < 4
   signal(state.buffer,"insert-pixbuf",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GdkPixbuf*,gpointer data){g_signal_stop_emission_by_name(buffer,"insert-pixbuf");gtkEvent(data,[](GtkControl&){fail(453,"RichTextBox embedded images require an unsupported RTF picture destination");});}),c.self());
+#else
+  signal(state.buffer,"insert-paintable",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GdkPaintable*,gpointer data){g_signal_stop_emission_by_name(buffer,"insert-paintable");gtkEvent(data,[](GtkControl&){fail(453,"RichTextBox embedded images require an unsupported RTF picture destination");});}),c.self());
+#endif
   signal(state.buffer,"insert-child-anchor",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextChildAnchor*,gpointer data){g_signal_stop_emission_by_name(buffer,"insert-child-anchor");gtkEvent(data,[](GtkControl&){fail(453,"RichTextBox embedded objects are unavailable");});}),c.self());
 }
 std::shared_ptr<GtkRichText> prepare(GtkControl& c,const GtkRtfDocument& document) {
@@ -191,12 +241,15 @@ std::shared_ptr<GtkRichText> prepare(GtkControl& c,const GtkRtfDocument& documen
     int count=scalarOffset(document.text.substr(run.first,run.last-run.first),run.last-run.first);apply(c,*result,scalar,scalar+count,run.style);scalar+=count;previous=run.last;
   }
   if(previous!=document.text.size())fail(380,"Rich text lacks attributed runs");
+  for(const auto& field:document.fields){if(field.first>field.last||field.last>document.text.size())fail(380,"Invalid rich field range");GtkTextIter a,b;gtk_text_buffer_get_iter_at_offset(result->buffer,&a,scalarOffset(document.text,field.first));gtk_text_buffer_get_iter_at_offset(result->buffer,&b,scalarOffset(document.text,field.last));result->fields.push_back({gtk_text_buffer_create_mark(result->buffer,nullptr,&a,TRUE),gtk_text_buffer_create_mark(result->buffer,nullptr,&b,FALSE),field});}
   // Register GTK's structured format as well as plain text for native copy/paste.
+#if GTK_MAJOR_VERSION < 4
   gtk_text_buffer_register_serialize_tagset(result->buffer,nullptr);gtk_text_buffer_register_deserialize_tagset(result->buffer,nullptr);
+#endif
   connect(c,*result);return result;
 }
 bool equal(const GtkRtfDocument& a,const GtkRtfDocument& b) {
-  if(a.text!=b.text||a.metadata!=b.metadata||a.emptyStyle!=b.emptyStyle)return false;
+  if(a.text!=b.text||a.metadata!=b.metadata||a.emptyStyle!=b.emptyStyle||a.fields!=b.fields)return false;
   size_t i=0,j=0;
   while(i<a.runs.size()&&j<b.runs.size()) {
     if(a.runs[i].style!=b.runs[j].style)return false;
@@ -230,14 +283,16 @@ GtkRtfDocument slice(const GtkRtfDocument& document,size_t first,size_t last) {
     auto start=std::max(run.first,first),end=std::min(run.last,last);gtkRtfAppend(result,document.text.substr(start,end-start),run.style);
   }
   if(last==document.text.size()&&(!last||gtkRtfParagraphEnd(document.text,last-1)))result.emptyStyle=document.emptyStyle;
+  for(auto field:document.fields)if(field.first>=first&&field.last<=last){field.first-=first;field.last-=first;result.fields.push_back(std::move(field));}
   return result;
 }
 void appendDocument(GtkRtfDocument& destination,const GtkRtfDocument& source) {
+  const auto offset=destination.text.size();for(auto field:source.fields){field.first+=offset;field.last+=offset;destination.fields.push_back(std::move(field));}
   for(const auto& run:source.runs)gtkRtfAppend(destination,source.text.substr(run.first,run.last-run.first),run.style);
   destination.emptyStyle=source.emptyStyle;
 }
 GtkRtfDocument normalizeParagraphs(const GtkRtfDocument& source) {
-  GtkRtfDocument result;result.metadata=source.metadata;auto paragraph=source.emptyStyle.paragraph;bool first=true;
+  GtkRtfDocument result;result.metadata=source.metadata;result.fields=source.fields;auto paragraph=source.emptyStyle.paragraph;bool first=true;
   for(const auto& run:source.runs)for(auto at=run.first;at<run.last;) {
     auto style=run.style;if(first)paragraph=style.paragraph;style.paragraph=paragraph;
     auto end=at;do {++end;}while(end<run.last&&!gtkRtfParagraphEnd(source.text,end-1));
@@ -298,8 +353,8 @@ void formatted(GtkRtfStyle& style,const std::string& name,const Value& value,int
   else if(name=="selalignment")style.paragraph.alignment=int(value.integral());
   else if(name=="selindent")style.paragraph.left=int(value.integral())-style.paragraph.first;
   else if(name=="selhangingindent"){auto firstLine=style.paragraph.left+style.paragraph.first;style.paragraph.first=-int(value.integral());style.paragraph.left=firstLine-style.paragraph.first;}
-  else if(name=="selrightindent")style.paragraph.right=int(value.integral());else if(name=="selbullet")style.paragraph.bullet=value.truth();
-  else if(name=="seltabcount"){auto& tabs=style.paragraph.tabs;auto count=size_t(value.integral());while(tabs.size()<count)tabs.push_back(tabs.empty()?720:tabs.back()+720);tabs.resize(count);}
+  else if(name=="selrightindent")style.paragraph.right=int(value.integral());else if(name=="selbullet"){style.paragraph.bullet=value.truth();style.paragraph.numbering=0;style.paragraph.marker.clear();style.paragraph.numberBefore.clear();}
+  else if(name=="seltabcount"){auto& tabs=style.paragraph.tabs;auto count=size_t(value.integral());while(tabs.size()<count)tabs.push_back(tabs.empty()?720:tabs.back()+720);tabs.resize(count);style.paragraph.tabAlignments.resize(count,0);}
   else if(name=="seltabs"){if(index<0||size_t(index)>=style.paragraph.tabs.size())fail(381);style.paragraph.tabs[size_t(index)]=int(value.integral());}
   validateStyle(style);
 }
@@ -313,7 +368,7 @@ void setAttribute(GtkControl& c,const std::string& name,Value value,int index=-1
     else {if(last>range.first&&last&&gtkRtfParagraphEnd(original.text,last-1)){}else {while(last<original.text.size()&&(last==first||!gtkRtfParagraphEnd(original.text,last-1)))++last;}}
   }
   if(first==last) {state.typing=typing;state.typingOverride=true;if(first==original.text.size())state.trailing=typing;return;}
-  GtkRtfDocument next;next.metadata=original.metadata;next.emptyStyle=original.emptyStyle;
+  GtkRtfDocument next;next.metadata=original.metadata;next.fields=original.fields;next.emptyStyle=original.emptyStyle;
   for(const auto& run:original.runs) {
     auto before=std::min(run.last,first);if(run.first<before)gtkRtfAppend(next,original.text.substr(run.first,before-run.first),run.style);
     auto a=std::max(run.first,first),b=std::min(run.last,last);
@@ -330,22 +385,31 @@ void drawBullets(GtkControl& c,cairo_t* context) {
   gtk_text_view_get_iter_at_location(GTK_TEXT_VIEW(c.widget),&iter,visible.x,visible.y);gtk_text_iter_set_line_offset(&iter,0);
   for(int count=0;count<4096;++count) {
     auto style=nativeStyle(c,iter);GdkRectangle rectangle;gtk_text_view_get_iter_location(GTK_TEXT_VIEW(c.widget),&iter,&rectangle);if(rectangle.y>visible.y+visible.height)break;
-    if(style.paragraph.bullet&&!style.hidden) {
+    if((style.paragraph.bullet||style.paragraph.numbering||!style.paragraph.marker.empty())&&!style.hidden) {
+      int ordinal=style.paragraph.numberStart;auto before=iter;
+      if(style.paragraph.numbering&&style.paragraph.marker.empty())for(int count=0;count<65536&&gtk_text_iter_backward_line(&before);++count){auto prior=nativeStyle(c,before).paragraph;if(prior.numbering!=style.paragraph.numbering||prior.numberStart!=style.paragraph.numberStart||prior.numberBefore!=style.paragraph.numberBefore||prior.numberAfter!=style.paragraph.numberAfter)break;++ordinal;}
+      auto marker=toUTF8(gtkRtfListMarker(style.paragraph,ordinal));
       int x,y;gtk_text_view_buffer_to_window_coords(GTK_TEXT_VIEW(c.widget),GTK_TEXT_WINDOW_WIDGET,rectangle.x,rectangle.y,&x,&y);
-      auto* layout=gtk_widget_create_pango_layout(c.widget,"\xe2\x80\xa2");auto* font=pango_font_description_new();pango_font_description_set_family(font,toUTF8(style.font).c_str());pango_font_description_set_size(font,int(style.size*PANGO_SCALE));pango_layout_set_font_description(layout,font);pango_font_description_free(font);
+      auto* layout=gtk_widget_create_pango_layout(c.widget,marker.c_str());auto* font=pango_font_description_new();pango_font_description_set_family(font,toUTF8(style.font).c_str());pango_font_description_set_size(font,int(style.size*PANGO_SCALE));pango_layout_set_font_description(layout,font);pango_font_description_free(font);int width=0;pango_layout_get_pixel_size(layout,&width,nullptr);
       auto color=gtkColor(style.foreground<0?int64_t(c.number("forecolor",0)):style.foreground);gdk_cairo_set_source_rgba(context,&color);
-      cairo_move_to(context,x-std::max(12,pixels(-style.paragraph.first)),y);pango_cairo_show_layout(context,layout);g_object_unref(layout);
+      cairo_move_to(context,style.paragraph.rtl?x+rectangle.width+6:x-std::max(width+6,pixels(-style.paragraph.first)),y);pango_cairo_show_layout(context,layout);g_object_unref(layout);
     }
     if(!gtk_text_iter_forward_line(&iter))break;
   }
 }
 }
 
+void gtkRichDraw(GtkControl& c,cairo_t* context) {if(c.richText&&!c.disposed)drawBullets(c,context);}
+
 void gtkRichInitialize(GtkControl& c) {
   if(c.spec.type!="RichTextBox"||c.richText)return;
   GtkRtfDocument document;document.emptyStyle=defaults(c);c.richText=prepare(c,document);
   gtk_text_view_set_buffer(GTK_TEXT_VIEW(c.widget),c.richText->buffer);nativeSelection(*c.richText,0,0);
-  g_signal_connect_data(c.widget,"draw",G_CALLBACK(+[](GtkWidget*,cairo_t* context,gpointer data)->gboolean {gtkEvent(data,[&](GtkControl& owner){drawBullets(owner,context);});return FALSE;}),new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data,GClosure*){delete static_cast<std::weak_ptr<GtkControl>*>(data);},G_CONNECT_AFTER);
+#if GTK_MAJOR_VERSION < 4
+  g_signal_connect_data(c.widget,"draw",G_CALLBACK(+[](GtkWidget*,cairo_t* context,gpointer data)->gboolean {gtkEvent(data,[&](GtkControl& owner){gtkRichDraw(owner,context);});return FALSE;}),new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data,GClosure*){delete static_cast<std::weak_ptr<GtkControl>*>(data);},G_CONNECT_AFTER);
+#else
+  g_object_set_data_full(G_OBJECT(c.widget),"vb6-rich-owner",new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data){delete static_cast<std::weak_ptr<GtkControl>*>(data);});
+#endif
 }
 void gtkRichDispose(GtkControl& c) {c.richText.reset();}
 void gtkRichSelectionChanged(GtkControl& c,bool fire) {
@@ -359,12 +423,17 @@ GtkRtfDocument gtkRichSnapshot(GtkControl& c) {
   auto& state=rich(c);GtkRtfDocument document;document.emptyStyle=state.trailing;document.metadata=state.metadata;
   GtkTextIter iter,end;gtk_text_buffer_get_bounds(state.buffer,&iter,&end);
   while(gtk_text_iter_compare(&iter,&end)<0) {
+#if GTK_MAJOR_VERSION < 4
     if(gtk_text_iter_get_pixbuf(&iter)||gtk_text_iter_get_child_anchor(&iter))fail(453,"RichTextBox contains unsupported embedded content");
+#else
+    if(gtk_text_iter_get_paintable(&iter)||gtk_text_iter_get_child_anchor(&iter))fail(453,"RichTextBox contains unsupported embedded content");
+#endif
     auto next=iter;if(!gtk_text_iter_forward_to_tag_toggle(&next,nullptr))next=end;if(gtk_text_iter_compare(&next,&end)>0)next=end;
     auto line=iter;gtk_text_iter_forward_line(&line);if(gtk_text_iter_compare(&line,&iter)>0&&gtk_text_iter_compare(&line,&next)<0)next=line;
     auto* text=gtk_text_buffer_get_text(state.buffer,&iter,&next,TRUE);std::unique_ptr<gchar,decltype(&g_free)> owned(text,g_free);
     gtkRtfAppend(document,fromUTF8(text),nativeStyle(c,iter));iter=next;
   }
+  for(const auto& field:state.fields){if(gtk_text_mark_get_deleted(field.first)||gtk_text_mark_get_deleted(field.last))continue;GtkTextIter a,b;gtk_text_buffer_get_iter_at_mark(state.buffer,&a,field.first);gtk_text_buffer_get_iter_at_mark(state.buffer,&b,field.last);auto copy=field.value;copy.first=utf16Offset(document.text,gtk_text_iter_get_offset(&a));copy.last=utf16Offset(document.text,gtk_text_iter_get_offset(&b));document.fields.push_back(std::move(copy));}
   document.emptyStyle=state.trailing;if(!document.text.empty()&&!gtkRtfParagraphEnd(document.text,document.text.size()-1))document.emptyStyle.paragraph=document.runs.back().style.paragraph;return document;
 }
 void gtkRichSetPlain(GtkControl& c,const Text& value,bool whole,bool fire) {
