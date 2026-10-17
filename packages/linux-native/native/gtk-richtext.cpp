@@ -162,6 +162,8 @@ void validateStyle(const GtkRtfStyle& style) {
   if(style.font.empty()||style.font.size()>255||style.font.find_first_of(u"\r\n;\t")!=Text::npos)fail(380,"Invalid rich text font family");
   if(!std::isfinite(style.size)||style.size<=0||style.size>3072)fail(380,"Invalid rich text font size");
   const auto& para=style.paragraph;
+  gtkRtfValidateText(para.markerFont);if(para.markerFont.size()>255||para.markerFont.find_first_of(u";\r\n\t")!=Text::npos||!std::isfinite(para.markerSize)||para.markerSize<0||para.markerSize>3072||para.markerBold< -1||para.markerBold>1||para.markerItalic< -1||para.markerItalic>1||para.markerAlignment<0||para.markerAlignment>2||para.markerColor< -1||para.markerColor>0xffffff)fail(380,"Invalid rich list marker formatting");
+  for(const auto& value:{para.numberBefore,para.numberAfter,para.marker}){gtkRtfValidateText(value);if(value.size()>64||value.find_first_of(u"\r\n\t")!=Text::npos)fail(380,"Invalid rich list marker text");}
   if(para.alignment<0||para.alignment>3||para.left<0||para.right<0||para.left>31680||para.right>31680||std::abs(para.first)>31680||para.before<0||para.after<0||para.before>31680||para.after>31680)fail(380,"Invalid rich paragraph geometry");
   if(para.lineExtra)fail(453,"Non-default native rich line spacing cannot be represented losslessly as RTF");
   if(std::abs(int64_t(para.lineSpacing))>31680||para.lineMultiple<0||para.lineMultiple>1||(para.lineMultiple&&para.lineSpacing<0))fail(380,"Invalid rich line spacing");
@@ -177,15 +179,15 @@ GtkTextTag* tag(GtkControl& c,GtkRichText& state,const GtkRtfStyle& style) {
   auto fore=gtkColor(style.foreground<0?int64_t(c.number("forecolor",0)):style.foreground);
   auto back=gtkColor(style.background<0?int64_t(c.number("backcolor",0xffffff)):style.background);
   const auto& para=style.paragraph;
-  int left=para.left,indent=para.first;
-  if(para.bullet||para.numbering||!para.marker.empty()){left=std::max(360,left);indent=0;}
+  int left=para.left,right=para.right,indent=para.first;
+  if(para.bullet||para.numbering||!para.marker.empty()){(para.rtl?right:left)=std::max(360,para.rtl?right:left);indent=0;}
   auto underline=style.underline==2?PANGO_UNDERLINE_DOUBLE:style.underline==3?PANGO_UNDERLINE_ERROR:style.underline?PANGO_UNDERLINE_SINGLE:PANGO_UNDERLINE_NONE;
   const auto rise=int(std::lround((style.rise/15.0+style.script*style.size*4.0/9)*PANGO_SCALE));
   g_object_set(value,"family",toUTF8(style.font).c_str(),"size-points",style.size,"weight",style.bold?PANGO_WEIGHT_BOLD:PANGO_WEIGHT_NORMAL,
     "style",style.italic?PANGO_STYLE_ITALIC:PANGO_STYLE_NORMAL,"variant",style.smallCaps?PANGO_VARIANT_SMALL_CAPS:PANGO_VARIANT_NORMAL,
     "underline",underline,"strikethrough",gboolean(style.strike),"foreground-rgba",&fore,"background-rgba",&back,
     "invisible",gboolean(style.hidden),"editable",gboolean(!style.protectedText),"rise",rise,"scale",style.script?0.7:1.0,
-    "letter-spacing",int(std::lround(style.spacing/15.0*PANGO_SCALE)),"left-margin",pixels(left),"right-margin",pixels(para.right),"indent",pixels(indent),
+    "letter-spacing",int(std::lround(style.spacing/15.0*PANGO_SCALE)),"left-margin",pixels(left),"right-margin",pixels(right),"indent",pixels(indent),
     "pixels-above-lines",pixels(para.before),"pixels-below-lines",pixels(para.after),"pixels-inside-wrap",0,
     "justification",para.alignment==1?GTK_JUSTIFY_RIGHT:para.alignment==2?GTK_JUSTIFY_CENTER:para.alignment==3?GTK_JUSTIFY_FILL:GTK_JUSTIFY_LEFT,
     "direction",para.rtl?GTK_TEXT_DIR_RTL:GTK_TEXT_DIR_LTR,nullptr);
@@ -220,6 +222,11 @@ void emitChange(GtkControl& c) {
 void signal(GtkTextBuffer* buffer,const char* name,GCallback callback,const std::shared_ptr<GtkControl>& c,bool after=false) {
   g_signal_connect_data(buffer,name,callback,new std::weak_ptr<GtkControl>(c),+[](gpointer data,GClosure*){delete static_cast<std::weak_ptr<GtkControl>*>(data);},after?G_CONNECT_AFTER:GConnectFlags(0));
 }
+size_t documentTextUnits(GtkControl& control) {
+  auto& state=rich(control);size_t total=control.editText().size();
+  for(const auto& object:state.objects)if(liveObject(state,object))for(const auto& child:object.presentation->children){const auto count=documentTextUnits(*child);if(count>GtkRtfMaxText-total)fail(7,"Nested RichTextBox text exceeds 4 Mi UTF-16 units");total+=count;}
+  return total;
+}
 void connect(GtkControl& c,GtkRichText& state) {
   signal(state.buffer,"begin-user-action",G_CALLBACK(+[](GtkTextBuffer* buffer,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& rich=::vb6::rich(owner);if(rich.buffer==buffer)++rich.userActionDepth;});}),c.self());
   signal(state.buffer,"end-user-action",G_CALLBACK(+[](GtkTextBuffer* buffer,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& rich=::vb6::rich(owner);if(rich.buffer!=buffer)return;if(rich.userActionDepth)--rich.userActionDepth;emitChange(owner);});}),c.self(),true);
@@ -230,6 +237,7 @@ void connect(GtkControl& c,GtkRichText& state) {
         auto text=fromUTF8(std::string(input,bytes<0?std::strlen(input):size_t(bytes)));gtkRtfValidateText(text);
         auto previous=owner.editText();auto maximum=owner.number("maxlength");
         if(text.size()>GtkRtfMaxText-previous.size())fail(7,"RichTextBox text exceeds 4 Mi UTF-16 units");
+        if(!state.objects.empty()||!state.parent.expired()){auto root=owner.self();while(auto parent=root->richText->parent.lock())root=std::move(parent);if(text.size()>GtkRtfMaxText-documentTextUnits(*root))fail(7,"Nested RichTextBox text exceeds 4 Mi UTF-16 units");}
         if(maximum>0&&text.size()>size_t(maximum)-std::min(size_t(maximum),previous.size())){g_signal_stop_emission_by_name(buffer,"insert-text");return;}
         auto first=gtk_text_iter_get_offset(iter);auto style=state.typingOverride&&first==state.selection.first?state.typing:insertionStyle(owner,first);
         tag(owner,state,style);state.insertions.push_back({first,int(g_utf8_strlen(input,bytes)),style});++state.operationDepth;
@@ -510,9 +518,10 @@ void drawBullets(GtkControl& c,cairo_t* context) {
       if(style.paragraph.numbering&&style.paragraph.marker.empty())for(int count=0;count<65536&&gtk_text_iter_backward_line(&before);++count){auto prior=nativeStyle(c,before).paragraph;if(prior.numbering!=style.paragraph.numbering||prior.numberStart!=style.paragraph.numberStart||prior.numberBefore!=style.paragraph.numberBefore||prior.numberAfter!=style.paragraph.numberAfter)break;++ordinal;}
       auto marker=toUTF8(gtkRtfListMarker(style.paragraph,ordinal));
       int x,y;gtk_text_view_buffer_to_window_coords(GTK_TEXT_VIEW(c.widget),GTK_TEXT_WINDOW_WIDGET,rectangle.x,rectangle.y,&x,&y);
-      auto* layout=gtk_widget_create_pango_layout(c.widget,marker.c_str());auto* font=pango_font_description_new();pango_font_description_set_family(font,toUTF8(style.font).c_str());pango_font_description_set_size(font,int(style.size*PANGO_SCALE));pango_layout_set_font_description(layout,font);pango_font_description_free(font);int width=0;pango_layout_get_pixel_size(layout,&width,nullptr);
-      auto color=gtkColor(style.foreground<0?int64_t(c.number("forecolor",0)):style.foreground);gdk_cairo_set_source_rgba(context,&color);
-      cairo_move_to(context,style.paragraph.rtl?x+rectangle.width+6:x-std::max(width+6,pixels(-style.paragraph.first)),y);pango_cairo_show_layout(context,layout);g_object_unref(layout);
+      const auto& para=style.paragraph;auto* layout=gtk_widget_create_pango_layout(c.widget,marker.c_str());auto* font=pango_font_description_new();pango_font_description_set_family(font,toUTF8(para.markerFont.empty()?style.font:para.markerFont).c_str());pango_font_description_set_size(font,int((para.markerSize?para.markerSize:style.size)*PANGO_SCALE));pango_font_description_set_weight(font,(para.markerBold<0?style.bold:bool(para.markerBold))?PANGO_WEIGHT_BOLD:PANGO_WEIGHT_NORMAL);pango_font_description_set_style(font,(para.markerItalic<0?style.italic:bool(para.markerItalic))?PANGO_STYLE_ITALIC:PANGO_STYLE_NORMAL);pango_layout_set_font_description(layout,font);pango_font_description_free(font);int width=0;pango_layout_get_pixel_size(layout,&width,nullptr);
+      auto color=gtkColor(para.markerColor>=0?para.markerColor:style.foreground<0?int64_t(c.number("forecolor",0)):style.foreground);gdk_cairo_set_source_rgba(context,&color);
+      const auto markerX=para.rtl?x+rectangle.width+std::max(12,pixels(-para.first)):x-std::max(12,pixels(-para.first));
+      cairo_move_to(context,markerX-(para.markerAlignment==1?width/2:para.markerAlignment==2?width:0),y);pango_cairo_show_layout(context,layout);g_object_unref(layout);
     }
     if(!gtk_text_iter_forward_line(&iter))break;
   }

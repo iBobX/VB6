@@ -16,13 +16,14 @@ const GtkRtfStyle& at(const GtkRtfDocument& document,size_t offset) {
 }
 void same(const GtkRtfDocument& a,const GtkRtfDocument& b) {
   if(a.text!=b.text)throw std::runtime_error("RTF roundtrip changed Unicode text: ["+toUTF8(a.text)+"] -> ["+toUTF8(b.text)+"]");
-  for(size_t i=0;i<a.text.size();++i)if(at(a,i)!=at(b,i))throw std::runtime_error("RTF roundtrip changed attributes at UTF-16 offset "+std::to_string(i));
+  for(size_t i=0;i<a.text.size();++i)if(at(a,i)!=at(b,i))throw std::runtime_error("RTF roundtrip changed attributes at UTF-16 offset "+std::to_string(i)+" in ["+toUTF8(a.text.substr(0,80))+"]");
   require(a.emptyStyle==b.emptyStyle,"RTF roundtrip changed trailing insertion style");
   require(a.fields==b.fields,"RTF roundtrip changed inert field instructions or ranges");
   require(a.objects.size()==b.objects.size(),"RTF roundtrip dropped embedded objects");
   if(!a.objects.empty())require(gtkRtfWrite(a)==gtkRtfWrite(b),"RTF roundtrip changed structured object content");
 }
 const std::string redPixel="89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082";
+const std::string modernLists=R"({\rtf1\deff0{\fonttbl{\f0 Sans;}{\f1\fcharset2 Symbol;}{\f2 Serif;}}{\colortbl;\red255\green0\blue0;}{\*\listtable{\list\listhybrid{\listlevel\levelnfc1\levelstartat4\leveljc2{\leveltext\'02\'00.;}{\levelnumbers\'01;}\f2\fs28\b\cf1\li720\fi-360\jclisttab\tx720}{\listlevel\levelnfc0\levelstartat2\levellegal1\levelnorestart1{\leveltext\'04\'00.\'01);}{\levelnumbers\'01\'03;}\li1440\fi-360\tx1440}\listid11}{\list\listsimple{\listlevel\levelnfc23{\leveltext\'01\'b7;}{\levelnumbers;}\f1\li720\fi-360\tx720}\listid22}}{\*\listoverridetable{\listoverride\listid11\listoverridecount0\ls1}{\listoverride\listid11\listoverridecount1{\lfolevel\listoverridestartat\levelstartat8}\ls2}{\listoverride\listid22\listoverridecount0\ls3}})";
 std::string hexBytes(const std::string& bytes){static const char digits[]="0123456789abcdef";std::string value;for(auto ch:bytes){value+=digits[uint8_t(ch)>>4];value+=digits[uint8_t(ch)&15];}return value;}
 GtkWidget* anchoredWidget(GtkTextChildAnchor* anchor) {
 #if GTK_MAJOR_VERSION < 4
@@ -63,6 +64,15 @@ void parser() {
   auto numbers=gtkRtfParse(R"({\rtf1{\*\pn\pnlvlbody\pnucrm\pnstart4{\pntxtb (}{\pntxta )}}first\par second})");
   require(at(numbers,0).paragraph.numbering==2&&gtkRtfListMarker(at(numbers,0).paragraph,4)==u"(IV)","Numbered paragraphs lost their numbering format or affixes");same(numbers,gtkRtfParse(gtkRtfWrite(numbers)));
   auto custom=gtkRtfParse(R"({\rtf1{\listtext 2.3.\tab}section})");require(custom.text==u"section"&&at(custom,0).paragraph.marker==u"2.3.","Explicit multilevel list marker was discarded");same(custom,gtkRtfParse(gtkRtfWrite(custom)));
+  auto modern=gtkRtfParse(modernLists+R"(\pard\ls1\ilvl0 First\par\pard\ls1\ilvl1 SubA\par\pard\ls1\ilvl0 Second\par\pard\ls1\ilvl1 SubB\par\pard\ls2\ilvl0 Restart\par\pard\ls1\ilvl0 Resume\par\pard\ls3 Bullet})");
+  require(at(modern,0).paragraph.marker==u"IV."&&at(modern,modern.text.find(u"SubA")).paragraph.marker==u"4.2)"&&at(modern,modern.text.find(u"SubB")).paragraph.marker==u"5.3)"&&at(modern,modern.text.find(u"Restart")).paragraph.marker==u"VIII."&&at(modern,modern.text.find(u"Resume")).paragraph.marker==u"VI."&&at(modern,modern.text.find(u"Bullet")).paragraph.marker==u"\u2022","Modern list counters, legal numbering, no-restart or override identities were lost");
+  require(at(modern,0).paragraph.markerFont==u"Serif"&&at(modern,0).paragraph.markerSize==14&&at(modern,0).paragraph.markerBold==1&&at(modern,0).paragraph.markerColor==255&&at(modern,0).paragraph.markerAlignment==2,"Modern list marker character formatting was discarded");same(modern,gtkRtfParse(gtkRtfWrite(modern)));
+  auto explicitModern=gtkRtfParse(modernLists+R"(\pard\ls1\ilvl1{\listtext 9.8)\tab}Explicit\par\pard\li2160\fi-720\ls1\ilvl0 Indented})");require(at(explicitModern,0).paragraph.marker==u"9.8)"&&at(explicitModern,explicitModern.text.find(u"Indented")).paragraph.left==2160&&at(explicitModern,explicitModern.text.find(u"Indented")).paragraph.first==-720,"Explicit marker result or paragraph list override was lost");same(explicitModern,gtkRtfParse(gtkRtfWrite(explicitModern)));
+  auto styledMarker=gtkRtfParse(R"({\rtf1{\fonttbl{\f0 Sans;}{\f1 Serif;}}{\colortbl;\red255\green0\blue0;}{\pntext\f1\fs30\b\i\cf1 Label\tab}body})");require(at(styledMarker,0).paragraph.marker==u"Label"&&at(styledMarker,0).paragraph.markerFont==u"Serif"&&at(styledMarker,0).paragraph.markerSize==15&&at(styledMarker,0).paragraph.markerBold==1&&at(styledMarker,0).paragraph.markerItalic==1&&at(styledMarker,0).paragraph.markerColor==255,"Standalone styled list marker was lost");same(styledMarker,gtkRtfParse(gtkRtfWrite(styledMarker)));
+  error(453,[&]{gtkRtfParse(R"({\rtf1{\pntext{\b A}B\tab}body})");});
+  for(const auto& suffix:{R"(\ls99 text})",R"(\ls1\ilvl8 text})"})error(380,[&]{gtkRtfParse(modernLists+suffix);});
+  auto badLevels=modernLists;badLevels.replace(badLevels.find("\\levelnumbers\\'01;"),std::string("\\levelnumbers\\'01;").size(),"\\levelnumbers\\'02;");error(380,[&]{gtkRtfParse(badLevels+"text}");});
+  auto unsupportedLevels=modernLists;unsupportedLevels.insert(unsupportedLevels.find("\\levelstartat4"),"\\levelfollow1");error(453,[&]{gtkRtfParse(unsupportedLevels+"text}");});
   auto spacing=gtkRtfParse(R"({\rtf1\deftab360\sl480\slmult1\tqr\tx720\tqc\tx1440\tqdec\tx2160 first\tab second\tab 12.34\par last})");
   require(at(spacing,0).paragraph.tabAlignments==std::vector<int>({1,2,3})&&at(spacing,0).paragraph.lineSpacing==480&&at(spacing,0).paragraph.lineMultiple==1&&at(spacing,0).paragraph.defaultTab==360,"RTF aligned tabs or multiple line spacing were discarded");same(spacing,gtkRtfParse(gtkRtfWrite(spacing)));
   auto fields=gtkRtfParse(R"({\rtf1 before {\field\fldlock{\*\fldinst HYPERLINK "https://example.org"}{\fldrslt\b Example}} after {\field{\*\fldinst LINK external-file}{\fldrslt cached}}})");
@@ -79,7 +89,11 @@ void parser() {
   for(const auto& input:{"{\\rtf1{\\pict\\pngblip deadbeef}}","{\\rtf1\\trowd\\cell text}","{\\rtf1\\trowd\\cellx1440 text\\row}","{\\rtf1\\trowd\\clmrg\\cellx1440\\cell\\row}"})error(380,[&]{gtkRtfParse(input);});
   auto symbol=gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}{\f1\fcharset42 Custom;}}\f0\u65?\u945?\f1\u66?})");
   require(symbol.text==u"A\u03b1B"&&at(symbol,0).charset==2&&at(symbol,2).charset==42,"Explicit Unicode with legacy font charset was lost");same(symbol,gtkRtfParse(gtkRtfWrite(symbol)));
-  error(453,[&]{gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0 raw})");});
+  auto symbolBytes=gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0 ABab\'b7\'a5\'e5\\\u92?})");require(symbolBytes.text==u"\u0391\u0392\u03b1\u03b2\u2022\u221e\u2211\u2234\\","Legacy Symbol bytes were not decoded into portable Unicode");same(symbolBytes,gtkRtfParse(gtkRtfWrite(symbolBytes)));
+  error(453,[&]{gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0\'e6})");});
+  for(const auto& input:{R"({\rtf1\chftn})",R"({\rtf1{\trowd\trrh-200\cellx1440 text\cell\row}})",R"({\rtf1{\trowd\trleft-100\cellx1440 text\cell\row}})",R"({\rtf1{\trowd\trautofit1\cellx1440 text\cell\row}})",R"({\rtf1{\object\objscalex200{\result preview}}})"})error(453,[&]{gtkRtfParse(input);});
+  auto scaledBudget=picture;scaledBudget.objects[0].widthGoal=scaledBudget.objects[0].heightGoal=61440;error(7,[&]{gtkRtfValidateObjects(scaledBudget);});
+  auto fieldBudget=regions;fieldBudget.objects[0].content->fields.resize(2050);fieldBudget.objects[1].content->fields.resize(2050);error(7,[&]{gtkRtfValidateObjects(fieldBudget);});
   auto overriddenScript=gtkRtfParse(R"({\rtf1\up6\super superscript\dn3 baseline})");same(overriddenScript,gtkRtfParse(gtkRtfWrite(overriddenScript)));
   auto nativeUnsupported=symbol;nativeUnsupported.runs.front().style.paragraph.lineExtra=15;error(453,[&]{gtkRtfWrite(nativeUnsupported);});
   auto scopedParagraph=gtkRtfParse(R"({\rtf1{\qc centered}})");same(scopedParagraph,gtkRtfParse(gtkRtfWrite(scopedParagraph)));
@@ -97,7 +111,11 @@ ControlSpec spec(const std::string& type,const std::string& name){ControlSpec va
 }
 int main() {
   try {
-    parser();Runtime runtime(makeNativeHost());runtime.name="GTK RichTextBox contracts";auto& host=static_cast<GtkHost&>(*runtime.host);
+    parser();
+#ifdef VB6_RTF_PARSER_ONLY
+    return 0;
+#else
+    Runtime runtime(makeNativeHost());runtime.name="GTK RichTextBox contracts";auto& host=static_cast<GtkHost&>(*runtime.host);
     Module module;module.name="RichForm";module.kind="form";module.form=spec("Form","RichForm");module.controls.push_back(spec("RichTextBox","Editor"));module.controls.push_back(spec("TextBox","Plain"));
     int changes=0,selections=0;Procedure change;change.name="editor_change";change.code=[&](Frame&){++changes;return Value{};};module.procedures[change.name]=change;
     Procedure selected;selected.name="editor_selchange";selected.code=[&](Frame&){++selections;return Value{};};module.procedures[selected.name]=selected;
@@ -182,6 +200,7 @@ int main() {
     for(const char* name:{"gtk-richtext-roundtrip.rtf","gtk-richtext-invalid.rtf","gtk-richtext-utf8.txt"})std::filesystem::remove(name);
     runtime.unload(form);error(91,[&]{editor->get(runtime,"textrtf");});runtime.stop();
     std::cout<<"LINUX_GTK_RICHTEXT_OK\n";return 0;
+#endif
   }catch(const Error& e){std::cerr<<"GTK RichTextBox VB error "<<e.number<<": "<<e.what()<<"\n";return 1;}
   catch(const std::exception& e){std::cerr<<"GTK RichTextBox contract failure: "<<e.what()<<"\n";return 1;}
 }
