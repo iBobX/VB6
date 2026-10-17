@@ -4,6 +4,7 @@
 #include "appkit-edit.hpp"
 #include <cassert>
 #include <iostream>
+#include <sstream>
 using namespace vb6;
 namespace {
 std::shared_ptr<MacControl> control(const std::shared_ptr<Instance>&form,const char*name) {
@@ -20,11 +21,28 @@ std::shared_ptr<MacItem> add(Runtime&rt,const std::shared_ptr<MacItems>&items,co
 bool pressSegment(NSSegmentedControl*control,NSInteger index) {
   // Momentary controls ignore programmatic selected-state assignments. Ask
   // AppKit's real accessibility segment to click through its native action.
-  NSArray*children=control.accessibilityChildren;
-  if(children.count!=NSUInteger(control.segmentCount))std::cerr<<"Segment accessibility count "<<children.count<<", expected "<<control.segmentCount<<", tracking "<<control.trackingMode<<'\n';
-  assert(children.count==NSUInteger(control.segmentCount)&&index>=0&&NSUInteger(index)<children.count);
-  id segment=children[NSUInteger(index)];assert([segment respondsToSelector:@selector(accessibilityPerformPress)]);
-  return [segment accessibilityPerformPress];
+  assert(index>=0&&index<control.segmentCount);NSString*caption=[control labelForSegment:index];assert(caption.length);
+  struct Node {id element;size_t depth;};std::vector<Node>pending{{control,0}};std::vector<id>matches;std::set<const void*>seen;
+  std::ostringstream hierarchy;bool truncated=false;
+  for(size_t cursor=0;cursor<pending.size();++cursor) {
+    if(cursor>=64){truncated=true;break;}const auto node=pending[cursor];id element=node.element;
+    if(!seen.insert((__bridge const void*)element).second)continue;
+    NSString*role=[element respondsToSelector:@selector(accessibilityRole)]?[element accessibilityRole]:@"";
+    NSString*label=[element respondsToSelector:@selector(accessibilityLabel)]?[element accessibilityLabel]:@"";
+    NSString*title=[element respondsToSelector:@selector(accessibilityTitle)]?[element accessibilityTitle]:@"";
+    const bool press=[element respondsToSelector:@selector(accessibilityPerformPress)];
+    const bool button=[role isEqualToString:NSAccessibilityButtonRole]||[role isEqualToString:NSAccessibilityRadioButtonRole]||[role isEqualToString:NSAccessibilityCheckBoxRole];
+    hierarchy<<"depth "<<node.depth<<", role "<<(role.UTF8String?:"")<<", label "<<(label.UTF8String?:"")<<", title "<<(title.UTF8String?:"")<<", press "<<press<<'\n';
+    if(button&&press&&([label isEqualToString:caption]||[title isEqualToString:caption]))matches.push_back(element);
+    NSArray*children=[element respondsToSelector:@selector(accessibilityChildren)]?[element accessibilityChildren]:nil;
+    for(id child in children) {
+      if(node.depth>=8||pending.size()>=64){truncated=true;break;}
+      pending.push_back({child,node.depth+1});
+    }
+  }
+  if(truncated||matches.size()!=1)std::cerr<<"Segment accessibility matches "<<matches.size()<<", caption "<<caption.UTF8String<<", tracking "<<control.trackingMode<<", truncated "<<truncated<<'\n'<<hierarchy.str();
+  assert(!truncated&&matches.size()==1);
+  return [matches.front() accessibilityPerformPress];
 }
 }
 void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance>&form) {
