@@ -10,7 +10,10 @@ std::shared_ptr<MacControl> control(const std::shared_ptr<Instance>&form,const c
   auto result=std::dynamic_pointer_cast<MacControl>(form->controls.at(name));assert(result);return result;
 }
 void setting(Runtime&rt,const std::shared_ptr<MacControl>&c,const char*key,const Text&value) {c->set(rt,key,Value::string(value));}
-template<class F>void rejected(F action,int number) {bool caught=false;try{action();}catch(const Error&error){caught=true;assert(error.number==number);}assert(caught);}
+template<class F>void rejected(F action,int number,int line=__builtin_LINE()) {
+  bool caught=false;try{action();}catch(const Error&error){caught=true;if(error.number!=number)std::cerr<<"Expected VB error "<<number<<", received "<<error.number<<" at appkit-segmented.mm:"<<line<<'\n';assert(error.number==number);}
+  if(!caught)std::cerr<<"Expected VB error "<<number<<", no error received at appkit-segmented.mm:"<<line<<'\n';assert(caught);
+}
 std::shared_ptr<MacItem> add(Runtime&rt,const std::shared_ptr<MacItems>&items,const Text&key,const Text&caption,int style=0) {
   return std::dynamic_pointer_cast<MacItem>(items->invoke(rt,"add",{Arg(Value::missing()),Arg(Value::string(key)),Arg(Value::string(caption)),Arg(Value::integer(style,Type::Integer))}).asObject());
 }
