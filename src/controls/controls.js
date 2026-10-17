@@ -185,7 +185,14 @@ export class BrowserControl {
       case 'CheckBox':case 'OptionButton':updateMnemonic(this.label,p.Caption);this.input.checked=truth(p.Value);this.input.indeterminate=Number(p.Value)===2;break;
       case 'ListBox':case 'FileListBox':case 'DirListBox':case 'DriveListBox':if(this.listRevision!==this.itemsRevision||this.lastListCount!==this.items.length){selectOptions(this.input,this.items,Number(p.ListIndex));this.listRevision=this.itemsRevision;this.lastListCount=this.items.length;}if(!p.MultiSelect)this.input.selectedIndex=Number(p.ListIndex);else for(const option of this.input.options)option.selected=this.selectedIndices.has(Number(option.value));break;
       case 'ComboBox':this.combo.refresh();this.input.style.backgroundColor=controlThemePaint(p.BackColor,'inputBackground',comboPaint(p.BackColor,p.ForeColor,p.Style));break;
-      case 'PictureBox':if(p.Picture||this.surface){const surface=this.ensureSurface();surface.background=p.BackColor;surface.setPicture(safeImage(p.Picture,this.assets));surface.invalidate();}break;
+      case 'PictureBox':{
+        // Preserve authored outer bounds and the existing child host. Clearing
+        // this override restores the local theme's ordinary PictureBox border.
+        const borderStyle=Number(p.BorderStyle)===0?'none':'';
+        if(n.style.borderStyle!==borderStyle)n.style.borderStyle=borderStyle;
+        if(p.Picture||this.surface){const surface=this.ensureSurface();surface.background=p.BackColor;surface.setPicture(safeImage(p.Picture,this.assets));surface.invalidate();}
+        break;
+      }
       case 'Image':{const source=safeImage(p.Picture,this.assets);if(source)this.image.src=source;else this.image.removeAttribute('src');this.image.hidden=!source;this.placeholder.hidden=!!source||!this.design;this.image.style.objectFit=truth(p.Stretch)?'fill':'none';break;}
       case 'Shape':this.shape.style.borderColor=oleColor(p.BorderColor||0);this.shape.style.borderRadius=[2,3].includes(Number(p.Shape))?'50%':[4,5].includes(Number(p.Shape))?'10px':'0';this.shape.style.background=Number(p.FillStyle)===1?'transparent':oleColor(p.FillColor);break;
       case 'Line':this.shape.style.background=oleColor(p.BorderColor);this.shape.style.height=Math.max(1,Number(p.BorderWidth)||1)+'px';break;

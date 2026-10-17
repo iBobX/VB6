@@ -27,6 +27,11 @@ test('built-in macOS preferences remains an editable, compilable XAML applicatio
   assert.equal(controls.get('Notifications').properties.MacOSControlStyle,'switch');
   assert.equal(controls.get('Notes').properties.MultiLine,-1);
   assert.equal(controls.get('Pages').properties.MacOSControlStyle,'segmented');
+  for(const name of ['LayoutMode','Options','Actions']) {
+    const row=controls.get(name).properties,pages=controls.get('Pages').properties;
+    assert.equal(row.Width,350*15);
+    assert.ok(row.Left+row.Width<=pages.Left-10*15,'Segment captions fit without overlapping the page column');
+  }
   const plan=tabPagePlan(module.form,{strict:true});
   assert.deepEqual([...plan.bindings.values()].map(binding=>binding.page),[0,1]);
   assert.deepEqual(input,project);

@@ -103,8 +103,10 @@
 }
 
 /* Search uses a normal text input for browser-independent native editing/IME.
- * Helpers are non-authored child nodes; clear is a real, named button. */
-.vb-control[data-macos-control-style="search"]>.vb-text-input {
+ * Helpers are non-authored child nodes; clear is a real, named button. Match
+ * the Classic field reset's specificity so its padding cannot cover either
+ * search affordance. The local palette still supplies the non-Mac fallback. */
+.vb-control[data-type="TextBox"][data-macos-control-style="search"]>input.vb-text-input[type="text"] {
  padding:var(--macos26-SearchPadding,var(--winui-TextControlPadding,4px 5px));
  border-radius:var(--macos26-CapsuleRadius,var(--app-radius,0));
 }

@@ -23,26 +23,26 @@ export const MACOS26_PREFERENCES_XAML = `<mac:Window xmlns="http://schemas.micro
     <mac:Label x:Name="Introduction" Text="Choose a layout, select options and try the native controls."
         mac:Canvas.Left="24" mac:Canvas.Top="62" Width="732" Height="24"
         Foreground="{ThemeResource macOS.secondaryLabelColor}"/>
-    <mac:Label Text="Layout" mac:Canvas.Left="24" mac:Canvas.Top="110" Width="320" Height="24"/>
+    <mac:Label Text="Layout" mac:Canvas.Left="24" mac:Canvas.Top="110" Width="350" Height="24"/>
     <!-- Each segment is a real Toolbar button, passed to the VB ButtonClick handler. -->
     <mac:SegmentedControl x:Name="LayoutMode" mac:Canvas.Left="24" mac:Canvas.Top="142"
-        Width="320" Height="32" ControlSize="large" SelectionMode="Single" SelectedIndex="1"
+        Width="350" Height="32" ControlSize="large" SelectionMode="Single" SelectedIndex="1"
         Action="LayoutMode_ButtonClick" mac:Accessibility.Label="Layout density">
       <mac:Segment Key="compact" Title="Compact"/>
       <mac:Segment Key="comfortable" Title="Comfortable"/>
       <mac:Segment Key="spacious" Title="Spacious"/>
     </mac:SegmentedControl>
-    <mac:Label Text="Show in the workspace" mac:Canvas.Left="24" mac:Canvas.Top="206" Width="320" Height="24"/>
+    <mac:Label Text="Show in the workspace" mac:Canvas.Left="24" mac:Canvas.Top="206" Width="350" Height="24"/>
     <mac:SegmentedControl x:Name="Options" mac:Canvas.Left="24" mac:Canvas.Top="238"
-        Width="320" Height="32" ControlSize="large" SelectionMode="Multiple"
+        Width="350" Height="32" ControlSize="large" SelectionMode="Multiple"
         Action="Options_ButtonClick" mac:Accessibility.Label="Workspace options">
       <mac:Segment Key="sidebar" Title="Sidebar" IsSelected="True"/>
       <mac:Segment Key="inspector" Title="Inspector" IsSelected="True"/>
       <mac:Segment Key="preview" Title="Preview"/>
     </mac:SegmentedControl>
-    <mac:Label Text="Quick actions" mac:Canvas.Left="24" mac:Canvas.Top="302" Width="320" Height="24"/>
+    <mac:Label Text="Quick actions" mac:Canvas.Left="24" mac:Canvas.Top="302" Width="350" Height="24"/>
     <mac:SegmentedControl x:Name="Actions" mac:Canvas.Left="24" mac:Canvas.Top="334"
-        Width="320" Height="32" ControlSize="large" SelectionMode="Momentary"
+        Width="350" Height="32" ControlSize="large" SelectionMode="Momentary"
         Action="Actions_ButtonClick" mac:Accessibility.Label="Quick actions">
       <mac:Segment Key="refresh" Title="Refresh"/>
       <mac:Segment Key="reset" Title="Reset"/>
@@ -102,7 +102,10 @@ Private Sub Actions_ButtonClick(ByVal Button As Object)
         Options.Buttons("sidebar").Value = 1
         Options.Buttons("inspector").Value = 1
         Options.Buttons("preview").Value = 0
-        Search.Text = ""
+        If Search.Text <> "" Then
+            Search.Tag = "reset"
+            Search.Text = ""
+        End If
         Notes.Text = ""
         Notifications.Value = 1
     End If
@@ -110,6 +113,10 @@ Private Sub Actions_ButtonClick(ByVal Button As Object)
 End Sub
 
 Private Sub Search_Change()
+    If Search.Tag = "reset" Then
+        Search.Tag = ""
+        If Search.Text = "" Then Exit Sub
+    End If
     Status.Caption = "Search: " & Search.Text
 End Sub
 

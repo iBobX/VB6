@@ -52,6 +52,16 @@ class MacOS26CompatibilityChecks:
         clear = page.locator('[data-control="Search"] .macos26-search-clear')
         status = page.locator('[data-control="SearchStatus"]')
         cancel = page.locator('[data-control="CancelStatus"]')
+        geometry = search.evaluate('''input=>{
+            const style=getComputedStyle(input),rect=input.getBoundingClientRect();
+            const icon=input.parentElement.querySelector('.macos26-search-icon').getBoundingClientRect();
+            return {padding:style.padding,expectedPadding:style.getPropertyValue('--macos26-SearchPadding').trim(),
+                radius:style.borderRadius,expectedRadius:style.getPropertyValue('--macos26-CapsuleRadius').trim(),
+                textLeft:rect.left+parseFloat(style.paddingLeft),iconRight:icon.right};
+        }''')
+        self.assertEqual(geometry['padding'],geometry['expectedPadding'])
+        self.assertEqual(geometry['radius'],geometry['expectedRadius'])
+        self.assertGreater(geometry['textLeft'],geometry['iconRight'])
         search.fill('Keyboard search')
         expect(status).to_have_text('1:Keyboard search')
         search.press('Escape')
@@ -195,6 +205,53 @@ class MacOS26CompatibilityChecks:
         finally:
             page.evaluate('compatNested.form.dispose();compatNested.controller.dispose();compatNested.node.remove()')
         self.record('nested Classic and dark macOS semantic colors stop at their own application roots')
+
+    def test_macos26_borderless_picture_containers_keep_children_and_restore_borders(self):
+        page = self.macos26_runtime()
+        page.evaluate('''()=>{
+            const parent=compatControls.Sidebar,source=compatControls.SemanticText;
+            const model={...structuredClone(source.model),id:'picture-editor',name:'PictureEditor',parent:parent.model.name};
+            Object.assign(model.properties,{Name:model.name,Left:180,Top:270,Width:5100,Height:1800,
+                Text:'Nested editor',MultiLine:-1,MacOSForegroundRole:'',MacOSBackgroundRole:'',
+                ForeColor:-2147483640,BackColor:-2147483643});
+            window.pictureEditor=new VB6Runtime.RuntimeAPI.BrowserControl(model,
+                {form:parent.form,vm:parent.vm,instance:parent.instance,backend:'canvas2d'});
+            parent.childHost.append(pictureEditor.node);
+            window.pictureIdentity={parent:parent.node,host:parent.childHost,child:pictureEditor.node,input:pictureEditor.input};
+            window.pictureGeometry=[parent.props.Left,parent.props.Top,parent.props.Width,parent.props.Height,
+                pictureEditor.props.Left,pictureEditor.props.Top,pictureEditor.props.Width,pictureEditor.props.Height];
+        }''')
+        parent = page.locator('[data-control="Sidebar"]')
+        editor = parent.locator('[data-control="PictureEditor"] textarea')
+        try:
+            # An ordinary PictureBox retains its original default before any edit.
+            expect(parent).to_have_css('border-top-width','2px')
+            bounds = parent.bounding_box()
+            editor.fill('Keep this text\nAcross border changes')
+            editor.evaluate('e=>{e.focus();e.setSelectionRange(2,9,"backward");}')
+            for theme in ('macos26','macos26-dark','classic'):
+                self.theme(theme,{'reduceMotion':True})
+                for style in (0,1,0):
+                    self.macos26_set('Sidebar',{'BorderStyle':style})
+                    for side in ('top','right','bottom','left'):
+                        expect(parent).to_have_css('border-'+side+'-width','2px' if style else '0px')
+                    self.assertEqual(parent.bounding_box(),bounds)
+                    expect(editor).to_have_value('Keep this text\nAcross border changes')
+                    expect(editor).to_be_focused()
+                    self.assertEqual(editor.evaluate('e=>[e===pictureIdentity.input,e.selectionStart,e.selectionEnd,e.selectionDirection]'),[True,2,9,'backward'])
+                    self.assertTrue(page.evaluate('''()=>{
+                        const c=compatControls.Sidebar,e=pictureEditor;
+                        return c.node===pictureIdentity.parent&&c.childHost===pictureIdentity.host&&
+                            e.node===pictureIdentity.child&&e.node.parentElement===c.childHost&&!c.surface&&!e.surface&&
+                            JSON.stringify([c.props.Left,c.props.Top,c.props.Width,c.props.Height,e.props.Left,e.props.Top,e.props.Width,e.props.Height])===JSON.stringify(pictureGeometry);
+                    }'''))
+                    child = editor.locator('..').bounding_box()
+                    self.assertAlmostEqual(child['x']-bounds['x'],12+(2 if style else 0),delta=0.05)
+                    self.assertAlmostEqual(child['y']-bounds['y'],18+(2 if style else 0),delta=0.05)
+            self.assertEqual(page.evaluate('compatControls.Sidebar.model.properties.BorderStyle'),1)
+        finally:
+            page.evaluate('pictureEditor.dispose()')
+        self.record('PictureBox BorderStyle 0→1→0 removes/restores real borders without replacing children, losing editor focus/selection or changing authored outer geometry')
 
     def test_macos26_accessibility_switch_default_button_and_indeterminate_progress(self):
         page = self.macos26_runtime()

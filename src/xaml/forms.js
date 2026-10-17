@@ -186,6 +186,7 @@ export function compileFormXaml(text, {form:previous,settings={},schema=createVb
     if (!native && ['Canvas','Grid','StackPanel','Border'].includes(sourceType)) { set('BorderStyle',0);set('Caption',''); }
     if (!native && sourceType === 'Ellipse') set('Shape',2);
     if(mac) {
+      if(['View','Canvas','StackView','Grid'].includes(node.type.name))set('TabStop',0);
       if(['CommandButton','CheckBox','OptionButton','Label','Frame'].includes(type))set('Caption','');
       if(node.type.name==='SearchField')set('MacOSControlStyle','search');
       if(node.type.name==='Switch')set('MacOSControlStyle','switch');
