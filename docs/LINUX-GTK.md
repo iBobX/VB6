@@ -95,6 +95,10 @@ filter and Unicode filenames. Cancellation preserves prior values and raises
 replacing an existing file. Font settings are committed only after GTK returns
 a valid selected font description.
 
+The host initializes GTK's program identity before UI creation. File-chooser
+recent-document metadata can then serialize the executable command and document
+URI correctly, including when the host runs without a `GtkApplication` wrapper.
+
 Clipboard text and pictures use the display's native clipboard. GTK4 adapts its
 asynchronous read APIs to the shared synchronous VB operations while processing
 the GLib event loop. Image transfer uses native textures and decoded pixels.
@@ -168,8 +172,8 @@ node tools/test-linux-aot.mjs --toolkit gtk4 --rebuild --jobs 3
 The native fixtures cover all admitted control types, signal dispatch, mutable
 key input, Unicode selection, menu state and hidden popups, focus order,
 collection mutation, graphics, modal lifetime, real common-dialog button
-responses, clipboard transfer, rich-document persistence, CUPS printing, and
-cursor ownership. The same gate also executes actual compiled VB projects and
+responses, recent-document launch metadata, clipboard transfer, rich-document
+persistence, CUPS printing, and cursor ownership. The same gate also executes actual compiled VB projects and
 rejects malformed native project metadata.
 
 [`display-contracts.mjs`](../packages/linux-native/tests/display-contracts.mjs)

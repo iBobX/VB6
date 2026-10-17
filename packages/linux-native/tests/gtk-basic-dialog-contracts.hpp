@@ -55,6 +55,20 @@ inline bool selectFontRow(GtkWidget* widget){
 inline void qualifyGtkBasicDialogs(vb6::Runtime& runtime,vb6::GtkHost& host){
   using namespace vb6;using namespace vb6_basic_dialog_contracts;
   {
+    // Exercise the same implicit application command used by GtkRecentManager,
+    // without depending on or modifying the user's recent-file database.
+    const auto* program=g_get_prgname();const auto* application=g_get_application_name();
+    require(program&&*program&&application&&*application,"Native GTK application has no executable identity");
+    constexpr auto* uri="file:///tmp/vb6-native-program-name.txt";
+    auto bookmarks=std::unique_ptr<GBookmarkFile,decltype(&g_bookmark_file_free)>(g_bookmark_file_new(),g_bookmark_file_free);
+    g_bookmark_file_set_mime_type(bookmarks.get(),uri,"text/plain");g_bookmark_file_add_application(bookmarks.get(),uri,nullptr,nullptr);
+    gsize length=0;auto* serialized=g_bookmark_file_to_data(bookmarks.get(),&length,nullptr);require(serialized&&length,"Native recent-file launch metadata could not be serialized");
+    auto restored=std::unique_ptr<GBookmarkFile,decltype(&g_bookmark_file_free)>(g_bookmark_file_new(),g_bookmark_file_free);
+    const auto loaded=g_bookmark_file_load_from_data(restored.get(),serialized,length,nullptr);g_free(serialized);require(loaded,"Native recent-file launch metadata did not round trip");
+    gchar* command=nullptr;guint count=0;const auto found=g_bookmark_file_get_application_info(restored.get(),uri,application,&command,&count,nullptr,nullptr);
+    const bool valid=found&&count==1&&command&&std::string(command)==std::string(program)+" "+uri;g_free(command);require(valid,"Native recent-file metadata lost the executable or document URI");
+  }
+  {
     Interaction interaction(host,[](GtkWidget* dialog){require(GTK_IS_MESSAGE_DIALOG(dialog),"MsgBox is not a native message dialog");respond(dialog,6);return true;});
     auto result=host.messageBox(u"Native GTK question Ω",3,u"Question");interaction.check();require(result.integral()==6,"MsgBox did not return the native Yes result");
   }

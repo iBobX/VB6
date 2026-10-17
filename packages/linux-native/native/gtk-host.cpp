@@ -103,6 +103,13 @@ GtkHost::~GtkHost() { shutdown(); }
 void GtkHost::ensureApplication() {
   if (std::this_thread::get_id() != thread) fail(5,"GTK must run on the native application's main thread");
   if (initialized) return;
+  // GTK4 no longer parses argv. Its recent-file manager still needs a
+  // program name to create the command used to reopen a selected document.
+  if (!g_get_prgname()) {
+    auto program = runtime->executablePath.filename().string();
+    if (program.empty()) program = runtime->name.empty() ? "vb6" : runtime->name;
+    g_set_prgname(program.c_str());
+  }
   if (!gtk_init_check(nullptr,nullptr)) fail(453,"GTK could not open a display (check DISPLAY or WAYLAND_DISPLAY)");
   initialized = true;
   g_set_application_name(runtime->name.c_str());
