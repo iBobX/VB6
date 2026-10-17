@@ -26,9 +26,14 @@ export function runPackagingTool(command,args,{cwd,signal,env={},timeout=300000,
   signal?.throwIfAborted();
   if(typeof command!=='string'||!command||command.includes('\0'))throw new Error('Invalid native packaging tool path');
   return new Promise((resolve,reject)=>{
-    const child=spawn(command,args,{cwd,env:{...process.env,...env,LC_ALL:'C',LANG:'C'},stdio:['ignore','pipe','pipe'],shell:false});
+    const ownGroup=process.platform!=='win32';
+    const child=spawn(command,args,{cwd,env:{...process.env,...env,LC_ALL:'C',LANG:'C'},stdio:['ignore','pipe','pipe'],shell:false,detached:ownGroup});
     let stdout=[],stderr=[],length=0,failure,timer,killTimer,settled=false;
-    const stop=error=>{failure??=error;child.kill('SIGTERM');killTimer??=setTimeout(()=>child.kill('SIGKILL'),2000);killTimer.unref();};
+    const terminate=kind=>{
+      if(ownGroup&&child.pid){try{process.kill(-child.pid,kind);}catch(error){if(error.code!=='ESRCH')child.kill(kind);}}
+      else child.kill(kind);
+    };
+    const stop=error=>{failure??=error;terminate('SIGTERM');killTimer??=setTimeout(()=>terminate('SIGKILL'),2000);killTimer.unref();};
     const abort=()=>stop(signal.reason??new DOMException('Native packaging cancelled','AbortError'));
     const finish=(error,value)=>{
       if(settled)return;settled=true;clearTimeout(timer);clearTimeout(killTimer);signal?.removeEventListener('abort',abort);
@@ -62,5 +67,6 @@ export async function sysrootPath(root,relative) {
 }
 export async function packageToolVersion(command,args,settings) {
   const {stdout,stderr}=await runPackagingTool(command,args,{...settings,maxOutput:128*1024,timeout:30000});
-  return (stdout.trim()||stderr.trim()).split('\n')[0].slice(0,512);
+  const lines=(stdout.trim()||stderr.trim()).split('\n').map(line=>line.trim());
+  return (lines[0].endsWith(':')&&lines[1]?lines.slice(0,2).join(' '):lines[0]).slice(0,512);
 }

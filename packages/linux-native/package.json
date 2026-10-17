@@ -21,6 +21,7 @@
     "src/native-distribution-tools.mjs",
     "src/distribution-targets.js",
     "src/appimage-dependencies.mjs",
+    "src/appimage-gtk-data.mjs",
     "src/appimage-runtime.mjs",
     "src/appimage-runtime-payload.mjs",
     "bin",

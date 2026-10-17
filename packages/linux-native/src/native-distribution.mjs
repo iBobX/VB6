@@ -5,9 +5,10 @@ import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {unpackLinuxAOTArchive,linuxDistributionOptions} from '../dist/index.js';
 import {LINUX_NATIVE_DISTRIBUTION_FORMATS,LINUX_FLATPAK_RUNTIME,LINUX_FLATPAK_DEFAULT_PERMISSIONS} from './distribution-targets.js';
-import {readPackageFile,writePackageFile,runPackagingTool,sysrootPath,packageToolVersion} from './native-distribution-tools.mjs';
+import {readPackageFile,writePackageFile,runPackagingTool,packageToolVersion} from './native-distribution-tools.mjs';
 import {loadAppImageRuntime,APPIMAGE_RUNTIME_LICENSE} from './appimage-runtime.mjs';
 import {bundleAppImageDependencies} from './appimage-dependencies.mjs';
+import {appImageGtkDataNotice} from './appimage-gtk-data.mjs';
 export {LINUX_NATIVE_DISTRIBUTION_FORMATS,LINUX_FLATPAK_RUNTIME,LINUX_FLATPAK_DEFAULT_PERMISSIONS};
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -26,7 +27,7 @@ export function linuxNativeDistributionOptions(options={},applicationName='Appli
   const common=linuxDistributionOptions({...options,format:'zip'},applicationName);
   if(options.format==='appimage')return Object.freeze({...common,format:'appimage'});
   const appId=options.appId??'org.vb6studio.App_'+common.packageName.replace(/[^A-Za-z0-9_]/g,'_');
-  if(typeof appId!=='string'||appId.length>255||!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){2,}$/.test(appId))throw new Error('Flatpak appId must be a reverse-DNS identifier with at least three ASCII components');
+  if(typeof appId!=='string'||appId.length>242||!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*){2,}$/.test(appId))throw new Error('Flatpak appId must be a reverse-DNS identifier with at least three ASCII components and at most 242 characters to fit exported metadata filenames');
   const runtime=options.runtime??LINUX_FLATPAK_RUNTIME.name,runtimeVersion=options.runtimeVersion??LINUX_FLATPAK_RUNTIME.version;
   if(runtime!==LINUX_FLATPAK_RUNTIME.name)throw new Error('Flatpak runtime must be org.gnome.Platform (GTK3 and GTK4 are required)');
   if(typeof runtimeVersion!=='string'||!/^[5-9][0-9]$/.test(runtimeVersion))throw new Error('Flatpak runtimeVersion must be a stable GNOME release 50 or newer');
@@ -42,15 +43,17 @@ export function linuxNativeDistributionOptions(options={},applicationName='Appli
 }
 function nativeToolchain(value,format,architecture) {
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Native packaging toolchain must be an object');
-  const common=['temporaryDirectory'],specific=format==='appimage'?['sysroot','readelf','mksquashfs','unsquashfs','appimageRuntime','appimageRuntimeSha256']:['flatpak','ostree','gpgKeyId','gpgHome','gpgPublicKey','flatpakIconSandbox'];
+  const common=['temporaryDirectory'],specific=format==='appimage'?['sysroot','readelf','mksquashfs','unsquashfs','appimageRuntime','appimageRuntimeSha256','appimageRuntimeLicense']:['flatpak','ostree','gpgKeyId','gpgHome','gpgPublicKey','flatpakIconSandbox'];
   for(const key of Object.keys(value))if(![...common,...specific].includes(key))throw new Error('Unsupported '+format+' toolchain option: '+key);
   for(const [key,item]of Object.entries(value)){
     if(key==='flatpakIconSandbox'){if(typeof item!=='boolean')throw new Error('flatpakIconSandbox must be boolean');continue;}
-    if(typeof item!=='string'||!item||item.includes('\0')||item.length>4096)throw new Error('Invalid native packaging toolchain '+key);
+    if(typeof item!=='string'||!item||/[\x00-\x1f\x7f]/.test(item)||item.length>4096)throw new Error('Invalid native packaging toolchain '+key);
   }
   if(value.gpgKeyId&&!/^[A-Fa-f0-9]{40,64}$/.test(value.gpgKeyId))throw new Error('Flatpak gpgKeyId must be a full signing-key fingerprint');
   if((value.gpgHome||value.gpgPublicKey)&&!value.gpgKeyId)throw new Error('Flatpak signing options require gpgKeyId');
   if(value.gpgKeyId&&!value.gpgPublicKey)throw new Error('Flatpak signing requires gpgPublicKey for bundle verification');
+  if(value.appimageRuntime&&!value.appimageRuntimeLicense)throw new Error('A custom AppImage runtime requires appimageRuntimeLicense');
+  if(value.appimageRuntimeLicense&&!value.appimageRuntime)throw new Error('appimageRuntimeLicense requires appimageRuntime');
   if(format==='appimage'&&!value.sysroot&&architecture!==(process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':'unsupported'))throw new Error('Cross-architecture AppImage packaging requires an explicit target sysroot');
   return {...value};
 }
@@ -66,6 +69,11 @@ function desktop(application,metadata,command,iconName) {
 }
 function appstream(application,metadata) {
   return '<?xml version="1.0" encoding="UTF-8"?>\n<component type="desktop-application"><id>'+metadata.appId+'</id><metadata_license>CC0-1.0</metadata_license><project_license>'+xml(metadata.license==='Unspecified'?'LicenseRef-proprietary':metadata.license)+'</project_license><name>'+xml(application.name)+'</name><summary>'+xml(metadata.summary)+'</summary><description>'+metadata.description.split(/\n\s*\n/).map(p=>'<p>'+xml(p.replace(/\n/g,' '))+'</p>').join('')+'</description><launchable type="desktop-id">'+metadata.appId+'.desktop</launchable>'+ (metadata.homepage?'<url type="homepage">'+xml(metadata.homepage)+'</url>':'')+'<releases><release version="'+xml(metadata.version)+'"/></releases></component>\n';
+}
+function flatpakFilename(metadata,architecture) {
+  const suffix='-'+metadata.version+'-'+architecture+'.flatpak',limit=255-Buffer.byteLength(suffix);
+  const stem=metadata.appId.length>limit?metadata.appId.slice(0,limit-13)+'-'+hash(metadata.appId).slice(0,12):metadata.appId;
+  return stem+suffix;
 }
 async function flatpakBundle(context) {
   const {work,files,compiler,metadata,toolchain,signal,applicationSha256,report}=context,settings={cwd:work,signal};
@@ -103,15 +111,17 @@ async function flatpakBundle(context) {
     await runPackagingTool(ostree,['--repo='+reimport,'show','--gpg-verify-remote=publisher',commit],settings);
   }
   const bytes=await readPackageFile(bundle);
-  return {bytes,filename:metadata.appId+'-'+metadata.version+'-'+architecture+'.flatpak',nativePackaging:{...provenance,commit,ref,runtimeRepository:metadata.runtimeRepository,containerVerified:true},signed:Boolean(toolchain.gpgKeyId),installation:{prefix:'/app/lib/'+metadata.packageName,launcher:'/app/bin/'+metadata.packageName,desktop:metadata.appId+'.desktop'}};
+  return {bytes,filename:flatpakFilename(metadata,architecture),nativePackaging:{...provenance,commit,ref,runtimeRepository:metadata.runtimeRepository,containerVerified:true},signed:Boolean(toolchain.gpgKeyId),installation:{prefix:'/app/lib/'+metadata.packageName,launcher:'/app/bin/'+metadata.packageName,desktop:metadata.appId+'.desktop'}};
 }
 function appimageLauncher(compiler,metadata,dependencies) {
   const lines=['#!/bin/sh','set -u','APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1','export APPDIR',
     'export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
     'export XDG_DATA_DIRS="$APPDIR/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}:/usr/local/share:/usr/share"',
+    'export GTK_DATA_PREFIX="$APPDIR/usr"',
     'export GSETTINGS_SCHEMA_DIR="$APPDIR/usr/share/glib-2.0/schemas"','export FONTCONFIG_FILE="$APPDIR/etc/fonts/fonts.conf"'];
   if(dependencies.gtkPaths.length)lines.push('export GTK_PATH='+dependencies.gtkPaths.map(value=>'"$APPDIR/'+value+'"').join(':'));
   if(dependencies.gioPaths.length)lines.push('export GIO_MODULE_DIR="$APPDIR/'+dependencies.gioPaths[0]+'"');
+  if(dependencies.dataRelocations.length)lines.push('exec 9< "$APPDIR/usr/share/xml/iso-codes" || exit 1');
   if(!dependencies.caches.length){lines.push('exec "$APPDIR"/'+shellQuote('usr/lib/'+metadata.packageName+'/bin/'+compiler.name)+' "$@"');return lines.join('\n')+'\n';}
   lines.push('cache_root=$(mktemp -d "${TMPDIR:-/tmp}/vb6-appimage.XXXXXXXX") || exit 1','trap \'rm -rf -- "$cache_root"\' 0');
   for(let index=0;index<dependencies.caches.length;index++){
@@ -141,10 +151,12 @@ async function appimageBundle(context) {
   await writePackageFile(appdir,'.DirIcon',icon);
   await writePackageFile(appdir,'usr/share/applications/'+metadata.packageName+'.desktop',desktop(compiler,metadata,metadata.packageName,metadata.packageName));
   await writePackageFile(appdir,'usr/share/icons/hicolor/scalable/apps/'+metadata.packageName+'.svg',icon);
-  await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/appimage-runtime-license.txt',APPIMAGE_RUNTIME_LICENSE+'\nPinned source: '+runtime.manifest.source+'\nRelease: '+runtime.manifest.release+'\n');
+  const runtimeLicense=toolchain.appimageRuntimeLicense?new TextDecoder('utf-8',{fatal:true}).decode(await readPackageFile(toolchain.appimageRuntimeLicense,4*1024*1024)):APPIMAGE_RUNTIME_LICENSE;
+  await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/appimage-runtime-license.txt',runtimeLicense+'\nPinned source: '+runtime.manifest.source+'\nRelease: '+runtime.manifest.release+'\n');
+  if(dependencies.dataRelocations.length)await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/gtk-data-relocations.txt',appImageGtkDataNotice(dependencies.dataRelocations));
   const provenance={version:1,format:'appimage',applicationSha256,executableSha256:report.executableSha256,appimageRuntime:runtime.manifest,tools:versions,
     minimumGlibc:dependencies.minimumGlibc,bundledLibraries:dependencies.libraries,externalLibraries:dependencies.externalLibraries,licenseFiles:dependencies.licenseFiles,
-    dependencyFiles:dependencies.files};
+    dependencyFiles:dependencies.files,dataRelocations:dependencies.dataRelocations};
   await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/distribution.json',json(provenance));
   await runPackagingTool(mksquashfs,[appdir,image,'-noappend','-all-root','-no-xattrs','-no-exports','-no-progress','-comp','gzip','-b','131072','-processors','1','-mkfs-time','0','-all-time','0','-root-mode','755'],{...settings,env:{SOURCE_DATE_EPOCH:undefined}});
   const filesystem=await readPackageFile(image),bytes=Buffer.concat([runtime.bytes,filesystem]);
@@ -159,7 +171,8 @@ async function appimageBundle(context) {
     if(!info.isFile()||(info.mode&0o777)!==item.mode||hash(await readPackageFile(location,128*1024*1024))!==item.sha256)throw new Error('AppImage independent extraction verification failed: '+item.path);
   }
   const architecture=compiler.architecture==='arm64'?'aarch64':'x86_64';
-  return {bytes,filename:metadata.packageName+'-'+metadata.version+'-'+architecture+'.AppImage',nativePackaging:{...provenance,containerVerified:true,squashfsOffset:runtime.bytes.length},signed:false,
+  const {dependencyFiles,...summary}=provenance;
+  return {bytes,filename:metadata.packageName+'-'+metadata.version+'-'+architecture+'.AppImage',nativePackaging:{...summary,dependencyFileCount:dependencyFiles.length,dependencyManifest:'usr/share/vb6/'+metadata.packageName+'/distribution.json',containerVerified:true,squashfsOffset:runtime.bytes.length},signed:false,
     installation:{prefix:prefix.slice(0,-1),launcher:'AppRun',desktop:metadata.packageName+'.desktop'}};
 }
 

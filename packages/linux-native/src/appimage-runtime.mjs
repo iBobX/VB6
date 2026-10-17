@@ -6,6 +6,7 @@ import {readPackageFile} from './native-distribution-tools.mjs';
 export {APPIMAGE_RUNTIME_RELEASE,APPIMAGE_RUNTIME_SOURCE,APPIMAGE_RUNTIME_LICENSE};
 
 export function inspectAppImageRuntime(bytes,architecture) {
+  if(bytes instanceof Uint8Array&&!Buffer.isBuffer(bytes))bytes=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);
   const machine=architecture==='x64'?62:architecture==='arm64'?183:0;
   if(!machine||bytes.length<64||bytes.length>8*1024*1024||bytes[0]!==127||bytes.subarray(1,4).toString()!=='ELF'||bytes[4]!==2||bytes[5]!==1||bytes.readUInt16LE(18)!==machine||bytes[8]!==65||bytes[9]!==73||bytes[10]!==2)throw new Error('AppImage runtime must be a type-2 ELF64 for the selected architecture');
   const shoff=Number(bytes.readBigUInt64LE(40)),shsize=bytes.readUInt16LE(58),shnum=bytes.readUInt16LE(60),phoff=Number(bytes.readBigUInt64LE(32)),phsize=bytes.readUInt16LE(54),phnum=bytes.readUInt16LE(56);
@@ -30,5 +31,5 @@ export async function loadAppImageRuntime(architecture,{runtimePath,runtimeSha25
   }
   const manifest=inspectAppImageRuntime(bytes,architecture);
   if(manifest.sha256!==runtimeSha256)throw new Error('AppImage runtime SHA256 mismatch');
-  return {bytes,manifest:{...manifest,release,source,license:'MIT; LGPL-2.1-or-later; BSD-2-Clause; Zlib'}};
+  return {bytes,manifest:{...manifest,release,source,license:release==='custom'?'caller-supplied':'MIT; LGPL-2.1-or-later; BSD-2-Clause; Zlib'}};
 }

@@ -8,6 +8,7 @@ import {loadAppImageRuntime,inspectAppImageRuntime} from '../packages/linux-nati
 import {LINUX_NATIVE_DISTRIBUTION_FORMATS,LINUX_FLATPAK_DEFAULT_PERMISSIONS} from '../packages/linux-native/src/distribution-targets.js';
 import {runPackagingTool,sysrootPath,readPackageFile,writePackageFile} from '../packages/linux-native/src/native-distribution-tools.mjs';
 import {linuxNativeDistributionOptions,packageLinuxApplicationNative} from '../packages/linux-native/src/native-distribution.mjs';
+import {bundleAppImageDependencies} from '../packages/linux-native/src/appimage-dependencies.mjs';
 import {exportLinuxApplication} from '../packages/linux-native/dist/index.js';
 import {exportLinuxProject} from '../packages/linux-native/src/node.mjs';
 const project={schema:1,name:'Native Distribution',startup:'Sub Main',modules:[{name:'MainModule',kind:'module',code:'Public Sub Main()\nDebug.Print "LINUX_NATIVE_DISTRIBUTION_OK"\nEnd Sub'}]};
@@ -36,6 +37,11 @@ test('native package options reject identity, INI, shell and permission injectio
     {format:'flatpak',branch:'../stable'},{format:'flatpak',flatpakPermissions:['filesystem=host']},
     {format:'flatpak',flatpakPermissions:['share=network','share=network']},{format:'flatpak',flatpakPermissions:['socket=x11','socket=fallback-x11']},
     {format:'appimage',appId:'org.example.Test'},{format:'appimage',unexpected:true}])assert.throws(()=>linuxNativeDistributionOptions(options),JSON.stringify(options));
+});
+test('Flatpak identity fits all exported filesystem component limits',()=>{
+  const id='org.example.'+'A'.repeat(230);assert.equal(id.length,242);
+  assert.equal(linuxNativeDistributionOptions({format:'flatpak',appId:id}).appId,id);
+  assert.throws(()=>linuxNativeDistributionOptions({format:'flatpak',appId:id+'A'}),/242 characters/);
 });
 for(const architecture of ['x64','arm64'])test('pinned '+architecture+' AppImage runtime has a verified static type-2 ELF header',async()=>{
   const runtime=await loadAppImageRuntime(architecture),layout=inspectAppImageRuntime(runtime.bytes,architecture);
@@ -91,7 +97,19 @@ test('native package validation rejects damage and cancellation before invoking 
   await assert.rejects(packageLinuxApplicationNative(app,{format:'flatpak'},{signal:AbortSignal.abort()}),{name:'AbortError'});
   await assert.rejects(packageLinuxApplicationNative(app,{format:'flatpak'},{toolchain:{command:'bad'}}),/Unsupported flatpak toolchain/);
   await assert.rejects(packageLinuxApplicationNative(app,{format:'flatpak'},{toolchain:{gpgKeyId:'short'}}),/full signing-key fingerprint/);
+  await assert.rejects(packageLinuxApplicationNative(app,{format:'appimage'},{toolchain:{appimageRuntime:'/tmp/runtime'}}),/requires appimageRuntimeLicense/);
+  await assert.rejects(packageLinuxApplicationNative(app,{format:'flatpak'},{toolchain:{temporaryDirectory:'/tmp/one\ntwo'}}),/Invalid native packaging toolchain/);
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'flatpak',appId:'invalid'}}),/reverse-DNS/);
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'zip',appId:'org.example.Test'}}),/require flatpak/);
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'zip'},toolchain:{flatpak:'bad'}}),/require appimage or flatpak/);
+});
+test('AppImage dependency traversal rejects a library from another architecture',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux ELF dependency reader');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-wrong-dependency-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const app=await exportLinuxApplication(project),bad=await loadAppImageRuntime('arm64');
+  const sysroot=path.join(directory,'target'),libraries=path.join(sysroot,'usr/lib/x86_64-linux-gnu'),appdir=path.join(directory,'AppDir');
+  await fs.mkdir(libraries,{recursive:true});await fs.mkdir(appdir);await fs.writeFile(path.join(libraries,'wrong-machine'),bad.bytes);
+  for(const name of app.report.dependencies)await fs.symlink('wrong-machine',path.join(libraries,name));
+  const executable=path.join(directory,'program');await fs.writeFile(executable,app.executable);
+  await assert.rejects(bundleAppImageDependencies({appdir,executable,compiler:app.options,toolchain:{sysroot}}),/wrong ELF architecture/);
 });
