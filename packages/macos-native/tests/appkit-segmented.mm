@@ -17,6 +17,15 @@ template<class F>void rejected(F action,int number,int line=__builtin_LINE()) {
 std::shared_ptr<MacItem> add(Runtime&rt,const std::shared_ptr<MacItems>&items,const Text&key,const Text&caption,int style=0) {
   return std::dynamic_pointer_cast<MacItem>(items->invoke(rt,"add",{Arg(Value::missing()),Arg(Value::string(key)),Arg(Value::string(caption)),Arg(Value::integer(style,Type::Integer))}).asObject());
 }
+bool pressSegment(NSSegmentedControl*control,NSInteger index) {
+  // Momentary controls ignore programmatic selected-state assignments. Ask
+  // AppKit's real accessibility segment to click through its native action.
+  NSArray*children=control.accessibilityChildren;
+  if(children.count!=NSUInteger(control.segmentCount))std::cerr<<"Segment accessibility count "<<children.count<<", expected "<<control.segmentCount<<", tracking "<<control.trackingMode<<'\n';
+  assert(children.count==NSUInteger(control.segmentCount)&&index>=0&&NSUInteger(index)<children.count);
+  id segment=children[NSUInteger(index)];assert([segment respondsToSelector:@selector(accessibilityPerformPress)]);
+  return [segment accessibilityPerformPress];
+}
 }
 void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance>&form) {
   auto tab=control(form,"c21"),pages=control(form,"c22"),toolbar=control(form,"c24"),edit=control(form,"c2");
@@ -155,10 +164,11 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
     setting(rt,toolbar,"macoscontrolstyle",u"segmented");auto native=toolbar->appearanceSegments;
     assert(native&&native.segmentCount==2&&toolbar->widget==toolbarWidget&&toolbar->handle==toolbarHandle);
     assert(native.trackingMode==(mode==0?NSSegmentSwitchTrackingMomentary:mode==1?NSSegmentSwitchTrackingSelectAny:NSSegmentSwitchTrackingSelectOne));
-    int before=buttonClicks;native.selectedSegment=1;[native sendAction:native.action to:native.target];host.check();
-    assert(buttonClicks==before+1&&observedButton==b);
+    int before=buttonClicks;const bool pressed=pressSegment(native,1);host.check();
+    if(!pressed||buttonClicks!=before+1||observedButton!=b)std::cerr<<"Segment action mode "<<mode<<", pressed "<<pressed<<", selected "<<native.selectedSegment<<", clicks "<<buttonClicks-before<<", expected item "<<(observedButton==b)<<'\n';
+    assert(pressed);assert(buttonClicks==before+1);assert(observedButton==b);
     assert(b->get(rt,"value").integral()==(mode==0?0:1));assert(a->get(rt,"value").integral()==(mode==1?1:0));
-    b->set(rt,"enabled",Value::boolean(false));before=buttonClicks;native.selectedSegment=1;[native sendAction:native.action to:native.target];host.check();assert(buttonClicks==before);
+    b->set(rt,"enabled",Value::boolean(false));before=buttonClicks;pressSegment(native,1);host.check();assert(buttonClicks==before);
     b->set(rt,"enabled",Value::boolean(true));a->set(rt,"visible",Value::boolean(false));assert(native.segmentCount==1&&toolbar->appearanceSegmentItems.front()==b->identity);
     if(mode==2){
       a->set(rt,"value",Value::integer(1));assert(b->get(rt,"value").integral()==0);assert(native.selectedSegment==-1);assert(![native isSelectedForSegment:0]);
