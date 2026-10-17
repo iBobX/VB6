@@ -158,10 +158,21 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
         const listing=(await run('gpg',['--homedir',keyring,'--batch','--with-colons','--list-secret-keys'])).stdout;
         const fingerprint=listing.split('\n').find(line=>line.startsWith('fpr:'))?.split(':')[9];assert.match(fingerprint,/^[0-9A-F]{40,64}$/);
         const exported=(await run('gpg',['--homedir',keyring,'--batch','--armor','--export',fingerprint])).stdout;await fs.writeFile(publicKey,exported);
+        const unsignedRepo=path.join(work,'independent-flatpak-repo');
+        const unsignedVerification=path.join(work,'unsigned-verification');await run('ostree',['--repo='+unsignedVerification,'init','--mode=archive-z2']);
+        await run('ostree',['--repo='+unsignedVerification,'remote','add','--gpg-import='+publicKey,'publisher','file://'+unsignedRepo]);
+        const unsignedRef=(await run('ostree',['--repo='+unsignedRepo,'refs'])).stdout.trim().split('\n')[0];
+        await assert.rejects(run('ostree',['--repo='+unsignedVerification,'pull-local','--untrusted','--gpg-verify','--remote=publisher','--commit-metadata-only',unsignedRepo,unsignedRef]),/signature|Signature|GPG|gpg/);
         const result=await packageLinuxApplicationNative(application,{...packageOptions,format:'flatpak',appId:identity('SignedQualification')},
           {toolchain:{...toolchain('flatpak'),gpgHome:keyring,gpgKeyId:fingerprint,gpgPublicKey:publicKey}});
-        assert.equal(result.report.signed,true);assert.equal(result.report.nativePackaging.containerVerified,true);
-        checks.push({format:'flatpak',publisherSignatureVerified:true,fingerprint});console.log('PASS '+architecture+' '+toolkit+' Flatpak: signed commit independently verified with isolated test key');
+        assert.equal(result.report.signed,true);assert.equal(result.report.nativePackaging.containerVerified,true);assert.equal(result.report.nativePackaging.signatureVerification,'ostree-pull-local-gpg-verify');
+        await run('gpg',['--homedir',keyring,'--batch','--pinentry-mode','loopback','--passphrase','','--quick-generate-key','Wrong packaging test key <other@example.invalid>','ed25519','sign','0']);
+        const keys=(await run('gpg',['--homedir',keyring,'--batch','--with-colons','--list-secret-keys'])).stdout;
+        const other=keys.split('\n').filter(line=>line.startsWith('fpr:')).map(line=>line.split(':')[9]).find(value=>value!==fingerprint);assert.match(other,/^[0-9A-F]{40,64}$/);
+        const wrongPublicKey=path.join(work,'wrong-signing-public.asc');await fs.writeFile(wrongPublicKey,(await run('gpg',['--homedir',keyring,'--batch','--armor','--export',other])).stdout);
+        await assert.rejects(packageLinuxApplicationNative(application,{...packageOptions,format:'flatpak',appId:identity('WrongKeyQualification')},
+          {toolchain:{...toolchain('flatpak'),gpgHome:keyring,gpgKeyId:fingerprint,gpgPublicKey:wrongPublicKey}}),/signature|Signature|GPG|gpg/);
+        checks.push({format:'flatpak',publisherSignatureVerified:true,unsignedCommitRejected:true,wrongPublisherKeyRejected:true,fingerprint});console.log('PASS '+architecture+' '+toolkit+' Flatpak: verified signature, unsigned-commit and wrong-key rejection');
       }finally {await run('gpgconf',['--homedir',keyring,'--kill','gpg-agent']);}
     }
     report.passed=true;return report;

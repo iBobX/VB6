@@ -128,7 +128,7 @@ npm run build:linux -- examples/calculator.vb6web \
   --gpg-public-key /path/to/publisher-public.asc
 ```
 
-The exporter signs the OSTree commit with the selected existing GPG key, includes the supplied public key, and verifies the reimported commit against it before returning `signed: true`. It does not generate a publisher identity, retrieve credentials, publish keys, or contact a key server. Unsigned export is the default. A successful signature verifies the supplied key; it does not establish independent publisher trust.
+The exporter signs the OSTree commit with the selected existing GPG key and includes the supplied public key. It imports the bundle and uses a fresh repository with `ostree pull-local --untrusted --gpg-verify` to require a valid signature before returning `signed: true`. Unsigned commits and a mismatched public key are rejected by this verification path. It does not generate a publisher identity, retrieve credentials, publish keys, or contact a key server. Unsigned export is the default. A successful signature verifies the supplied key; it does not establish independent publisher trust.
 
 ## Node API
 

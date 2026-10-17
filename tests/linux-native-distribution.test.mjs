@@ -84,6 +84,23 @@ test('native packaging uses literal tool arguments and bounds subprocess output'
   await assert.rejects(pending,{name:'AbortError'});
   await assert.rejects(runPackagingTool('vb6-required-packager-that-is-not-installed',[]),/Required native packaging tool/);
 });
+test('native packaging cancellation terminates owned descendants that ignore SIGTERM',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux process-group and /proc semantics');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-package-cancellation-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const pidFile=path.join(directory,'descendant.pid'),controller=new AbortController();
+  const pending=runPackagingTool('/bin/sh',['-c','trap "" TERM; /bin/sleep 30 & child=$!; printf "%s\\n" "$child" > "$1"; wait','vb6-cancellation-fixture',pidFile],{signal:controller.signal,timeout:10000});
+  const rejected=assert.rejects(pending,{name:'AbortError'});let child,problem;
+  try {
+    for(let attempt=0;attempt<200;attempt++){
+      try {child=Number((await fs.readFile(pidFile,'utf8')).trim());break;}catch(error){if(error.code!=='ENOENT')throw error;await new Promise(resolve=>setTimeout(resolve,10));}
+    }
+    assert.ok(Number.isInteger(child)&&child>0,'Owned descendant started');
+  }catch(error){problem=error;}
+  finally {controller.abort();await rejected;}
+  if(problem)throw problem;
+  try {assert.match(await fs.readFile('/proc/'+child+'/status','utf8'),/^State:\s+Z\b/m,'Cancelled descendant is not running');}
+  catch(error){if(error.code!=='ENOENT')throw error;}
+});
 test('native package writers reject path traversal and preserve reserved outputs',async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-native-writer-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   await assert.rejects(writePackageFile(directory,'../escape','bad'),/Invalid native package path/);

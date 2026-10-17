@@ -107,11 +107,17 @@ async function flatpakBundle(context) {
   await runPackagingTool(ostree,['--repo='+reimport,'fsck'],settings);
   if(toolchain.gpgKeyId){
     await readPackageFile(path.resolve(toolchain.gpgPublicKey),4*1024*1024);
-    await runPackagingTool(ostree,['--repo='+reimport,'remote','add','--gpg-import='+path.resolve(toolchain.gpgPublicKey),'publisher','file://'+repo],settings);
-    await runPackagingTool(ostree,['--repo='+reimport,'show','--gpg-verify-remote=publisher',commit],settings);
+    // `ostree show --gpg-verify-remote` may succeed when no signature exists.
+    // A fresh, explicitly verified local pull requires a present valid signature
+    // on the actual bundle's reimported commit; no network remote is contacted.
+    const signatures=path.join(work,'verified-signature');
+    await runPackagingTool(ostree,['--repo='+signatures,'init','--mode=archive-z2'],settings);
+    await runPackagingTool(ostree,['--repo='+signatures,'remote','add','--gpg-import='+path.resolve(toolchain.gpgPublicKey),'publisher','file://'+reimport],settings);
+    await runPackagingTool(ostree,['--repo='+signatures,'pull-local','--untrusted','--gpg-verify','--remote=publisher','--commit-metadata-only',reimport,commit],settings);
+    if((await runPackagingTool(ostree,['--repo='+signatures,'rev-parse',commit],settings)).stdout.trim()!==commit)throw new Error('Flatpak signature verification changed its commit');
   }
   const bytes=await readPackageFile(bundle);
-  return {bytes,filename:flatpakFilename(metadata,architecture),nativePackaging:{...provenance,commit,ref,runtimeRepository:metadata.runtimeRepository,containerVerified:true},signed:Boolean(toolchain.gpgKeyId),installation:{prefix:'/app/lib/'+metadata.packageName,launcher:'/app/bin/'+metadata.packageName,desktop:metadata.appId+'.desktop'}};
+  return {bytes,filename:flatpakFilename(metadata,architecture),nativePackaging:{...provenance,commit,ref,runtimeRepository:metadata.runtimeRepository,containerVerified:true,...(toolchain.gpgKeyId?{signatureVerification:'ostree-pull-local-gpg-verify'}:{})},signed:Boolean(toolchain.gpgKeyId),installation:{prefix:'/app/lib/'+metadata.packageName,launcher:'/app/bin/'+metadata.packageName,desktop:metadata.appId+'.desktop'}};
 }
 function appimageLauncher(compiler,metadata,dependencies) {
   const lines=['#!/bin/sh','set -u','APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || exit 1','export APPDIR',
