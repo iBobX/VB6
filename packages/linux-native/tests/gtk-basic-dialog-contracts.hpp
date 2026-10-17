@@ -10,7 +10,9 @@ struct Interaction {
   GtkHost& host;std::function<bool(GtkWidget*)> interact;guint source=0;bool completed=false;std::exception_ptr failure;
   gint64 deadline=g_get_monotonic_time()+30*G_TIME_SPAN_SECOND;
   Interaction(GtkHost& host,std::function<bool(GtkWidget*)> fn):host(host),interact(std::move(fn)){
-    source=g_timeout_add(10,+[](gpointer data)->gboolean{
+    // GTK4 populates chooser models from frame/idle callbacks. A frequent
+    // default-priority poll can starve those callbacks under CPU emulation.
+    source=g_timeout_add_full(G_PRIORITY_LOW,10,+[](gpointer data)->gboolean{
       auto& state=*static_cast<Interaction*>(data);
       try{
         if(g_get_monotonic_time()>=state.deadline){auto* title=state.host.dialogs.empty()?nullptr:gtk_window_get_title(GTK_WINDOW(state.host.dialogs.back()));throw std::runtime_error(std::string("Native common dialog did not complete: ")+(title?title:"not opened"));}
@@ -22,7 +24,7 @@ struct Interaction {
         if(!state.interact(dialog))return G_SOURCE_CONTINUE;
         state.completed=true;state.source=0;return G_SOURCE_REMOVE;
       }catch(...){state.failure=std::current_exception();state.source=0;if(!state.host.dialogs.empty())gtk_dialog_response(GTK_DIALOG(state.host.dialogs.back()),GTK_RESPONSE_CANCEL);return G_SOURCE_REMOVE;}
-    },this);
+    },this,nullptr);
   }
   ~Interaction(){if(source)g_source_remove(source);}
   void check(){if(failure)std::rethrow_exception(failure);require(completed&&host.dialogs.empty(),"Common dialog returned without its native response or retained a live dialog");}
