@@ -19,6 +19,25 @@ void same(const GtkRtfDocument& a,const GtkRtfDocument& b) {
   for(size_t i=0;i<a.text.size();++i)if(at(a,i)!=at(b,i))throw std::runtime_error("RTF roundtrip changed attributes at UTF-16 offset "+std::to_string(i));
   require(a.emptyStyle==b.emptyStyle,"RTF roundtrip changed trailing insertion style");
   require(a.fields==b.fields,"RTF roundtrip changed inert field instructions or ranges");
+  require(a.objects.size()==b.objects.size(),"RTF roundtrip dropped embedded objects");
+  if(!a.objects.empty())require(gtkRtfWrite(a)==gtkRtfWrite(b),"RTF roundtrip changed structured object content");
+}
+const std::string redPixel="89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082";
+std::string hexBytes(const std::string& bytes){static const char digits[]="0123456789abcdef";std::string value;for(auto ch:bytes){value+=digits[uint8_t(ch)>>4];value+=digits[uint8_t(ch)&15];}return value;}
+GtkWidget* anchoredWidget(GtkTextChildAnchor* anchor) {
+#if GTK_MAJOR_VERSION < 4
+  auto* widgets=gtk_text_child_anchor_get_widgets(anchor);auto* result=widgets?GTK_WIDGET(widgets->data):nullptr;g_list_free(widgets);return result;
+#else
+  guint count=0;auto** widgets=gtk_text_child_anchor_get_widgets(anchor,&count);auto* result=count?widgets[0]:nullptr;g_free(widgets);return result;
+#endif
+}
+GtkWidget* richChild(GtkWidget* widget) {
+  if(GTK_IS_TEXT_VIEW(widget))return widget;
+#if GTK_MAJOR_VERSION < 4
+  if(!GTK_IS_CONTAINER(widget))return nullptr;auto* children=gtk_container_get_children(GTK_CONTAINER(widget));GtkWidget* found=nullptr;for(auto* item=children;item&&!found;item=item->next)found=richChild(GTK_WIDGET(item->data));g_list_free(children);return found;
+#else
+  for(auto* child=gtk_widget_get_first_child(widget);child;child=gtk_widget_get_next_sibling(child))if(auto* found=richChild(child))return found;return nullptr;
+#endif
 }
 void parser() {
   const std::string sample=R"({\rtf1\ansi\ansicpg1252\deff0{\fonttbl{\f0\fswiss Arial;}{\f1\fmodern Courier New;}}{\colortbl;\red255\green0\blue0;\red0\green255\blue0;}\pard\f0\fs20 plain {\b\i\cf1\highlight2 BOLD} tail\par\qc\li720\fi-360\ri180\sb120\sa240\tx720\tx1440\f1\fs25\uldb Center\tab two\line soft\par\pard\protect\v hidden\v0\protect0\up6 raised\up0\super super\nosupersub})";
@@ -50,6 +69,14 @@ void parser() {
   require(fields.text==u"before Example after cached"&&fields.fields.size()==2&&fields.fields[0].first==7&&fields.fields[0].last==14&&fields.fields[0].locked&&fields.fields[1].instruction==u"LINK external-file","Inert field results or instructions were lost");same(fields,gtkRtfParse(gtkRtfWrite(fields)));
   auto nestedFields=gtkRtfParse(R"({\rtf1{\field{\*\fldinst IF 1}{\fldrslt a{\field{\*\fldinst PAGE}{\fldrslt 2}}z}}})");same(nestedFields,gtkRtfParse(gtkRtfWrite(nestedFields)));
   error(380,[&]{gtkRtfParse(R"({\rtf1{\field{\*\fldinst PAGE}}})");});
+  auto picture=gtkRtfParse("{\\rtf1 before{\\pict\\pngblip\\picwgoal300\\pichgoal300 "+redPixel+"}after}");require(picture.text==u"before\ufffcafter"&&picture.objects.size()==1&&picture.objects[0].width==1&&picture.objects[0].widthGoal==300,"RTF picture bytes, geometry or object anchor were lost");same(picture,gtkRtfParse(gtkRtfWrite(picture)));
+  const auto binaryPicture="{\\rtf1{\\pict\\pngblip\\bin"+std::to_string(picture.objects[0].bytes.size())+" "+picture.objects[0].bytes+"}}";auto binaryImage=gtkRtfParse(binaryPicture);require(binaryImage.objects[0].bytes==picture.objects[0].bytes,"Binary RTF image data was not preserved");same(binaryImage,gtkRtfParse(gtkRtfWrite(binaryImage)));
+  auto table=gtkRtfParse(R"({\rtf1 Before{\trowd\trleft0\trgaph60\clbrdrt\brdrs\brdrw30\cellx1440\clvertalc\cellx2880\intbl\b Left\cell\b0 Right\cell\row}After})");
+  require(table.text==u"Before\ufffc\u2028After"&&table.objects.size()==1&&table.objects[0].cells.size()==2&&table.objects[0].cells[0].content->text==u"Left"&&table.objects[0].cells[1].content->text==u"Right"&&table.objects[0].cells[0].borders[0].width==30,"RTF table structure, cell text or borders were lost");same(table,gtkRtfParse(gtkRtfWrite(table)));
+  auto nestedTable=gtkRtfParse(R"({\rtf1{\trowd\cellx2880 outer{\trowd\cellx1440 inner\nestcell\nestrow}\cell\row}})");same(nestedTable,gtkRtfParse(gtkRtfWrite(nestedTable)));
+  auto regions=gtkRtfParse(R"({\rtf1{\header\b Header}body{\footnote Note}{\footer Footer}{\object\objemb{\*\objclass Word.Document}{\*\objdata 00010203}{\result\i Cached preview}}})");
+  require(regions.objects.size()==4&&regions.objects[0].content->text==u"Header"&&regions.objects[1].content->text==u"Note"&&regions.objects[3].bytes==std::string("\0\1\2\3",4)&&regions.objects[3].content->text==u"Cached preview","Page regions or inert OLE result data were lost");same(regions,gtkRtfParse(gtkRtfWrite(regions)));
+  for(const auto& input:{"{\\rtf1{\\pict\\pngblip deadbeef}}","{\\rtf1\\trowd\\cell text}","{\\rtf1\\trowd\\cellx1440 text\\row}","{\\rtf1\\trowd\\clmrg\\cellx1440\\cell\\row}"})error(380,[&]{gtkRtfParse(input);});
   auto symbol=gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}{\f1\fcharset42 Custom;}}\f0\u65?\u945?\f1\u66?})");
   require(symbol.text==u"A\u03b1B"&&at(symbol,0).charset==2&&at(symbol,2).charset==42,"Explicit Unicode with legacy font charset was lost");same(symbol,gtkRtfParse(gtkRtfWrite(symbol)));
   error(453,[&]{gtkRtfParse(R"({\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0 raw})");});
@@ -60,7 +87,7 @@ void parser() {
   auto info=gtkRtfParse(R"({\rtf1{\info{\title Example}{\author Test}}{\*\generator VB6;}\paperw12240\paperh15840 text})");
   auto saved=gtkRtfWrite(info);require(saved.find("\\title Example")!=std::string::npos&&saved.find("\\paperw12240")!=std::string::npos,"RTF metadata was not preserved");
   for(const std::string input:{"", "{\\rtf1", "{\\rtf1 ok}}", "{\\rtf1 ok}garbage", "{\\rtf1\\'xy}", "{\\rtf1\\u-10179?}", "{\\rtf1\\bin999 xx}", "{\\rtf1\\cf20 x}", "{\\rtf1\\fs99999999999 x}", "{\\rtf1{\\stylesheet{\\s1\\sbasedon2 A;}{\\s2\\sbasedon1 B;}}\\s1 x}"})error(380,[&]{gtkRtfParse(input);});
-  for(const std::string input:{R"({\rtf1{\pict\pngblip deadbeef}})",R"({\rtf1{\object\objdata 00}})",R"({\rtf1\trowd\cell text})",R"({\rtf1\ulw text})",R"({\rtf1{\*\unknownFeature ignored}})"})error(453,[&]{gtkRtfParse(input);});
+  for(const std::string input:{R"({\rtf1{\object\objdata 00}})",R"({\rtf1\ulw text})",R"({\rtf1{\*\unknownFeature ignored}})"})error(453,[&]{gtkRtfParse(input);});
   error(7,[&]{gtkRtfParse("{\\rtf1"+std::string(256,'{')+"x"+std::string(257,'}'));});
   error(7,[&]{gtkRtfParse(std::string(GtkRtfMaxBytes+1,'x'));});
   error(380,[&]{gtkRtfParse(std::string("{\\rtf1 a")+'\0'+"b}");});
@@ -127,13 +154,27 @@ int main() {
     editor->set(runtime,"textrtf",Value::string(u"{\\rtf1 before {\\field{\\*\\fldinst HYPERLINK \"https://example.org\"}{\\fldrslt value}} tail}"));editor->editSelect(10,0);buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_insert_at_cursor(buffer,"-edit-",-1);host.check();
     auto changedField=gtkRichSnapshot(*editor);require(changedField.fields.size()==1&&changedField.fields[0].first==7&&changedField.fields[0].last==18&&changedField.fields[0].instruction==u"HYPERLINK \"https://example.org\"","Native editing did not track the field result marks");same(changedField,gtkRtfParse(gtkRtfWrite(changedField)));
     editor->editSelect(7,11);auto fieldFragment=editor->get(runtime,"selrtf");editor->set(runtime,"text",Value::string(u"paste: "));editor->editSelect(7,0);editor->set(runtime,"selrtf",fieldFragment);require(gtkRichSnapshot(*editor).fields.size()==1,"SelRTF lost a complete field wrapper");
+    editor->set(runtime,"textrtf",Value::string(fromUTF8("{\\rtf1 before{\\pict\\pngblip\\picwgoal300\\pichgoal300 "+redPixel+"}after}")));buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_get_iter_at_offset(buffer,&iter,6);
+#if GTK_MAJOR_VERSION < 4
+    auto* pixels=gtk_text_iter_get_pixbuf(&iter);require(pixels&&gdk_pixbuf_get_width(pixels)==20&&gdk_pixbuf_get_height(pixels)==20&&gdk_pixbuf_get_pixels(pixels)[0]==255,"RTF picture did not create the expected native red image pixels");
+#else
+    auto* pixels=gtk_text_iter_get_paintable(&iter);require(GDK_IS_TEXTURE(pixels)&&gdk_texture_get_width(GDK_TEXTURE(pixels))==20&&gdk_texture_get_height(GDK_TEXTURE(pixels))==20,"RTF picture did not create the expected GTK4 texture");std::array<guchar,1600> rgba{};gdk_texture_download(GDK_TEXTURE(pixels),rgba.data(),80);require(rgba[2]==255&&rgba[3]==255,"RTF picture texture lost its red pixel content");
+#endif
+    require(editor->editText()==u"before\ufffcafter","Native embedded image lost its UTF-16 text anchor");editor->editSelect(6,1);auto pictureFragment=editor->get(runtime,"selrtf");editor->set(runtime,"selbold",Value::boolean(true));same(gtkRichSnapshot(*editor),gtkRtfParse(gtkRtfWrite(gtkRichSnapshot(*editor))));
+    editor->set(runtime,"seltext",Value::string(u"x"));require(gtkRichSnapshot(*editor).objects.empty(),"Replacing an image did not release its object model");editor->editSelect(6,1);editor->set(runtime,"selrtf",pictureFragment);require(gtkRichSnapshot(*editor).objects.size()==1,"SelRTF did not restore an inline picture");
+    const auto imageBefore=editor->get(runtime,"textrtf").string();auto damaged=gtkRtfParse(gtkRtfBytes(imageBefore));damaged.objects[0].bytes[damaged.objects[0].bytes.size()-18]^=1;error(380,[&]{editor->set(runtime,"textrtf",Value::string(fromUTF8(gtkRtfWrite(damaged))));});require(editor->get(runtime,"textrtf").string()==imageBefore,"Image decode failure changed the existing buffer");
+    for(const auto* codec:{"jpeg","bmp"}){auto* source=gdk_pixbuf_new(GDK_COLORSPACE_RGB,FALSE,8,2,2);gdk_pixbuf_fill(source,0x208040ff);gchar* data=nullptr;gsize length=0;require(gdk_pixbuf_save_to_buffer(source,&data,&length,codec,nullptr,nullptr),"Cannot prepare native image codec fixture");g_object_unref(source);std::string bytes(data,length);g_free(data);if(std::string(codec)=="bmp")bytes.erase(0,14);editor->set(runtime,"textrtf",Value::string(fromUTF8("{\\rtf1{\\pict\\"+std::string(codec==std::string("bmp")?"dibitmap0":"jpegblip")+" "+hexBytes(bytes)+"}}")));auto snap=gtkRichSnapshot(*editor);require(snap.objects.size()==1&&snap.objects[0].bytes==bytes,"Native JPEG/DIB interchange lost original encoded bytes");same(snap,gtkRtfParse(gtkRtfWrite(snap)));}
+    editor->set(runtime,"textrtf",Value::string(u"{\\rtf1 Before{\\trowd\\trgaph60\\clbrdrt\\brdrs\\cellx1440\\cellx2880\\b Left\\cell\\b0 Right\\cell\\row}After}"));buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_get_iter_at_offset(buffer,&iter,6);auto* anchor=gtk_text_iter_get_child_anchor(&iter);require(anchor,"Table row did not create a native child anchor");auto* grid=anchoredWidget(anchor);require(GTK_IS_GRID(grid),"RTF table was not rendered with native GtkGrid cells");auto* cell=richChild(gtk_grid_get_child_at(GTK_GRID(grid),0,0));require(GTK_IS_TEXT_VIEW(cell),"Table cell does not contain an editable native rich text view");changes=0;gtk_text_buffer_insert_at_cursor(gtk_text_view_get_buffer(GTK_TEXT_VIEW(cell)),"edited ",-1);host.check();auto editedTable=gtkRichSnapshot(*editor);require(editedTable.objects[0].cells[0].content->text.find(u"edited ")!=Text::npos&&changes==1&&editor->get(runtime,"modified").truth(),"Native table cell edits did not persist or dispatch one outer Change");same(editedTable,gtkRtfParse(gtkRtfWrite(editedTable)));
+    editor->editSelect(7,1);auto tableBefore=editor->get(runtime,"textrtf").string();error(380,[&]{editor->set(runtime,"seltext",Value::string(u"partial"));});require(editor->get(runtime,"textrtf").string()==tableBefore,"Partial object replacement was not transactional");
+    buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));GtkTextIter a,b;gtk_text_buffer_get_iter_at_offset(buffer,&a,7);gtk_text_buffer_get_iter_at_offset(buffer,&b,8);gtk_text_buffer_delete(buffer,&a,&b);host.check();require(editor->editText()==u"BeforeAfter"&&gtkRichSnapshot(*editor).objects.empty(),"Native deletion did not remove the complete atomic table object");
+    editor->set(runtime,"textrtf",Value::string(u"{\\rtf1{\\header\\b Heading}body{\\footnote note}{\\object\\objemb{\\*\\objclass Test.Class}{\\*\\objdata 0102}{\\result cached}}}"));same(gtkRichSnapshot(*editor),gtkRtfParse(gtkRtfWrite(gtkRichSnapshot(*editor))));host.pump();
     editor->set(runtime,"text",Value::string(u"locked"));editor->editSelect(0,6);editor->set(runtime,"selprotected",Value::boolean(true));
     buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(editor->widget));gtk_text_buffer_get_iter_at_offset(buffer,&iter,2);require(!gtk_text_buffer_insert_interactive(buffer,&iter,"x",-1,TRUE),"SelProtected did not prevent native interactive edits");
     editor->set(runtime,"textrtf",preserved);auto before=editor->get(runtime,"textrtf").string();
     editor->invoke(runtime,"savefile",{Arg(Value::string(u"gtk-richtext-roundtrip.rtf"))});require(!editor->get(runtime,"modified").truth(),"SaveFile did not clear Modified");
     editor->set(runtime,"text",Value::string(u"changed"));editor->invoke(runtime,"loadfile",{Arg(Value::string(u"gtk-richtext-roundtrip.rtf"))});require(editor->get(runtime,"textrtf").string()==before,"Default LoadFile/SaveFile did not roundtrip RTF formatting");
     {std::ofstream file("gtk-richtext-invalid.rtf");file<<"{\\rtf1{\\object invalid}}";}
-    auto priorSelection=editor->editSelection();error(453,[&]{editor->invoke(runtime,"loadfile",{Arg(Value::string(u"gtk-richtext-invalid.rtf"))});});
+    auto priorSelection=editor->editSelection();error(380,[&]{editor->invoke(runtime,"loadfile",{Arg(Value::string(u"gtk-richtext-invalid.rtf"))});});
     require(editor->get(runtime,"textrtf").string()==before&&editor->editSelection()==priorSelection,"LoadFile failure replaced the previous document");
     editor->set(runtime,"text",Value::string(u"\u6f22\u5b57 \U0001f600"));editor->invoke(runtime,"savefile",{Arg(Value::string(u"gtk-richtext-utf8.txt")),Arg(Value::integer(1))});editor->set(runtime,"text",Value::string(u""));editor->invoke(runtime,"loadfile",{Arg(Value::string(u"gtk-richtext-utf8.txt")),Arg(Value::integer(1))});require(editor->editText()==u"\u6f22\u5b57 \U0001f600","Explicit plain UTF-8 file persistence lost Unicode");
     require(editor->invoke(runtime,"find",{Arg(Value::string(u"\U0001f600"))}).integral()==3,"Find returned a scalar offset instead of UTF-16 offset");

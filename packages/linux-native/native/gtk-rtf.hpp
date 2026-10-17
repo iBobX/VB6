@@ -9,6 +9,8 @@ constexpr size_t GtkRtfMaxBytes = 16 * 1024 * 1024;
 constexpr size_t GtkRtfMaxText = 4 * 1024 * 1024;
 constexpr size_t GtkRtfMaxRuns = 65536;
 constexpr size_t GtkRtfMaxTable = 4096;
+constexpr size_t GtkRtfMaxObjects = 1024;
+constexpr size_t GtkRtfMaxImagePixels = 16 * 1024 * 1024;
 
 struct GtkRtfParagraph {
   int alignment = 0; // VB: left, right, center, justified.
@@ -50,6 +52,27 @@ struct GtkRtfField {
   auto key() const { return std::tie(first,last,instruction,locked,dirty); }
   bool operator==(const GtkRtfField& other) const { return key()==other.key(); }
 };
+struct GtkRtfDocument;
+struct GtkRtfBorder {
+  int style = 0, width = 15, color = -1; // none, solid, double, dashed, dotted.
+};
+struct GtkRtfCell {
+  int right = 0, background = -1, vertical = 0;
+  int merge = 0; // 0 ordinary, 1 starts horizontal merge, 2 continues it.
+  std::array<GtkRtfBorder,4> borders; // top, right, bottom, left.
+  std::shared_ptr<GtkRtfDocument> content;
+};
+struct GtkRtfObject {
+  enum Kind {Picture,TableRow,Region,Embedded} kind = Picture;
+  size_t first = 0, last = 0; // Pictures use U+FFFC; block objects U+FFFC U+2028.
+  std::string format, bytes, destination;
+  Text label;
+  int width = 0, height = 0, widthGoal = 0, heightGoal = 0;
+  int scaleX = 100, scaleY = 100, cropLeft = 0, cropRight = 0, cropTop = 0, cropBottom = 0;
+  int left = 0, gap = 0, alignment = 0;
+  std::vector<GtkRtfCell> cells;
+  std::shared_ptr<GtkRtfDocument> content;
+};
 struct GtkRtfDocument {
   Text text;
   std::vector<GtkRtfRun> runs;
@@ -58,6 +81,7 @@ struct GtkRtfDocument {
   // retained for whole-document saves; they never import files or active objects.
   std::vector<std::string> metadata;
   std::vector<GtkRtfField> fields;
+  std::vector<GtkRtfObject> objects;
 };
 
 bool gtkRtfParagraphEnd(const Text&, size_t position) noexcept;
@@ -68,4 +92,5 @@ std::string gtkRtfWrite(const GtkRtfDocument&);
 std::string gtkRtfBytes(const Text&);
 Text gtkRtfDecode(const std::string&, int codepage);
 Text gtkRtfListMarker(const GtkRtfParagraph&, int ordinal);
+void gtkRtfValidateObjects(const GtkRtfDocument&);
 }

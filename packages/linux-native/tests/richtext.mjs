@@ -46,7 +46,7 @@ Private Sub LinuxPersistence()
   Debug.Assert Editor.SelCharOffset = 20
   On Error Resume Next
   Editor.TextRTF = "{\rtf1{\pict\pngblip 00}}"
-  Debug.Assert Err.Number = 453
+  Debug.Assert Err.Number = 380
   Err.Clear
   Editor.SelRTF = "{\rtf1 malformed"
   Debug.Assert Err.Number = 380
@@ -84,7 +84,60 @@ Private Sub LinuxPersistence()
   Debug.Assert Not Editor.SelBold
   Kill "linux-richtext.rtf"
   Kill "linux-richtext-plain.txt"
+  LinuxStructuredRTF
   Debug.Print "LINUX_RICH_PERSISTENCE_OK"
+End Sub
+
+Private Sub LinuxStructuredRTF()
+  Dim document As String, selected As String
+  Editor.TextRTF = "{\rtf1 before{\pict\pngblip\picwgoal300\pichgoal300 89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082}after}"
+  Debug.Assert Editor.Text = "before" & ChrW(-4) & "after"
+  Editor.SelStart = 6
+  Editor.SelLength = 1
+  selected = Editor.SelRTF
+  Editor.SelText = "image"
+  Debug.Assert Editor.Text = "beforeimageafter"
+  Editor.SelStart = 6
+  Editor.SelLength = 5
+  Editor.SelRTF = selected
+  Debug.Assert Editor.Text = "before" & ChrW(-4) & "after"
+  document = Editor.TextRTF
+  Editor.SaveFile "linux-richtext-image.rtf"
+  Editor.Text = ""
+  Editor.LoadFile "linux-richtext-image.rtf"
+  Debug.Assert Editor.TextRTF = document
+  Kill "linux-richtext-image.rtf"
+  Editor.TextRTF = "{\rtf1{\trowd\trgaph60\cellx1440\cellx2880\b Left\cell\b0 Right\cell\row}after}"
+  Debug.Assert Editor.Text = ChrW(-4) & ChrW(8232) & "after"
+  document = Editor.TextRTF
+  Editor.Text = ""
+  Editor.TextRTF = document
+  Debug.Assert Editor.TextRTF = document
+  Editor.TextRTF = "{\rtf1 before {\field\fldlock{\*\fldinst HYPERLINK ""https://example.org""}{\fldrslt\b example}} after}"
+  Debug.Assert Editor.Text = "before example after"
+  Editor.SelStart = 7
+  Editor.SelLength = 7
+  Debug.Assert Editor.SelBold
+  selected = Editor.SelRTF
+  Debug.Assert InStr(selected, "\fldinst") > 0
+  Editor.Text = ""
+  Editor.SelRTF = selected
+  Debug.Assert Editor.Text = "example"
+  Editor.TextRTF = "{\rtf1\sl480\slmult1\tqr\tx720\tqc\tx1440\tqdec\tx2160 one\tab two\tab 3.14}"
+  Debug.Assert Editor.SelTabCount = 3
+  document = Editor.TextRTF
+  Editor.TextRTF = document
+  Debug.Assert Editor.TextRTF = document
+  Editor.TextRTF = "{\rtf1{\header\b Heading}body{\footnote note}{\object\objemb{\*\objclass Test.Class}{\*\objdata 0102}{\result cached}}}"
+  document = Editor.TextRTF
+  Editor.SaveFile "linux-richtext-objects.rtf"
+  Editor.Text = ""
+  Editor.LoadFile "linux-richtext-objects.rtf"
+  Debug.Assert Editor.TextRTF = document
+  Debug.Assert InStr(Editor.TextRTF, "cached") > 0
+  Debug.Assert InStr(Editor.TextRTF, "\objdata 0102") > 0
+  Kill "linux-richtext-objects.rtf"
+  Debug.Print "LINUX_RICH_DOCUMENTS_OK"
 End Sub`;
   return project;
 }

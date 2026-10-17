@@ -14,19 +14,40 @@ struct GtkRichText {
   std::vector<std::string> metadata;
   struct Field {GtkTextMark* first=nullptr;GtkTextMark* last=nullptr;GtkRtfField value;};
   std::vector<Field> fields;
+  struct Presentation {
+    GtkWidget* widget=nullptr;
+    GdkPixbuf* image=nullptr;
+    GObject* paintable=nullptr;
+    GtkTextChildAnchor* anchor=nullptr;
+    GtkTextMark* mark=nullptr;
+    std::vector<std::shared_ptr<GtkControl>> children;
+    ~Presentation(){for(auto& child:children)child->dispose();if(widget)g_object_unref(widget);if(image)g_object_unref(image);if(paintable)g_object_unref(paintable);if(anchor)g_object_unref(anchor);if(mark){if(auto* buffer=gtk_text_mark_get_buffer(mark))gtk_text_buffer_delete_mark(buffer,mark);g_object_unref(mark);}}
+  };
+  struct Embedded {GtkTextMark* first=nullptr;GtkTextChildAnchor* anchor=nullptr;GtkRtfObject value;std::shared_ptr<Presentation> presentation;};
+  std::vector<Embedded> objects;
+  std::weak_ptr<GtkControl> parent;
   std::pair<int,int> selection{-1,-1};
   size_t operationDepth=0,userActionDepth=0;
   bool dirty=false,typingOverride=false,selecting=false;
   guint selectionIdle=0;
   struct Insertion {int first=0,count=0;GtkRtfStyle style;};
   std::vector<Insertion> insertions;
-  ~GtkRichText(){if(selectionIdle)g_source_remove(selectionIdle);if(buffer)g_object_unref(buffer);}
+  ~GtkRichText(){if(selectionIdle)g_source_remove(selectionIdle);for(auto& field:fields){g_object_unref(field.first);g_object_unref(field.last);}if(buffer)g_object_unref(buffer);}
 };
 namespace {
 GtkRichText& rich(GtkControl& control) {
   if(control.disposed)fail(91);
   if(control.spec.type!="RichTextBox"||!GTK_IS_TEXT_VIEW(control.widget)||!control.richText)fail(438,"Selection formatting requires RichTextBox");
   return *control.richText;
+}
+bool liveObject(GtkRichText& state,const GtkRichText::Embedded& object,GtkTextIter* position=nullptr) {
+  if(gtk_text_mark_get_deleted(object.first))return false;GtkTextIter iter;gtk_text_buffer_get_iter_at_mark(state.buffer,&iter,object.first);if(position)*position=iter;
+  if(object.anchor)return !gtk_text_child_anchor_get_deleted(object.anchor)&&gtk_text_iter_get_child_anchor(&iter)==object.anchor;
+#if GTK_MAJOR_VERSION < 4
+  return gtk_text_iter_get_pixbuf(&iter)==object.presentation->image;
+#else
+  return G_OBJECT(gtk_text_iter_get_paintable(&iter))==object.presentation->paintable;
+#endif
 }
 GtkRtfStyle defaults(GtkControl& c) {
   GtkRtfStyle value;value.font=c.property("fontname",Value::string(u"Sans")).string();value.size=c.number("fontsize",8.25);
@@ -193,6 +214,7 @@ void apply(GtkControl& c,GtkRichText& state,int first,int last,const GtkRtfStyle
 void emitChange(GtkControl& c) {
   auto state=c.richText;if(!state||state->operationDepth||state->userActionDepth||!state->dirty)return;
   state->dirty=false;c.properties["text"]=Value::string(c.editText());
+  if(auto parent=state->parent.lock()){if(parent->richText){parent->richText->dirty=true;gtk_text_buffer_set_modified(parent->richText->buffer,TRUE);emitChange(*parent);}return;}
   if(!c.suppressEvents)c.event("change");
 }
 void signal(GtkTextBuffer* buffer,const char* name,GCallback callback,const std::shared_ptr<GtkControl>& c,bool after=false) {
@@ -204,6 +226,7 @@ void connect(GtkControl& c,GtkRichText& state) {
   signal(state.buffer,"insert-text",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter* iter,gchar* input,gint bytes,gpointer data){
     gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer!=buffer)return;
       try {
+        auto offset=gtk_text_iter_get_offset(iter);for(const auto& object:state.objects){GtkTextIter start;if(!liveObject(state,object,&start))continue;auto first=gtk_text_iter_get_offset(&start),last=first+int(object.value.last-object.value.first);if(offset>first&&offset<last){gtk_text_buffer_get_iter_at_offset(buffer,iter,last);break;}}
         auto text=fromUTF8(std::string(input,bytes<0?std::strlen(input):size_t(bytes)));gtkRtfValidateText(text);
         auto previous=owner.editText();auto maximum=owner.number("maxlength");
         if(text.size()>GtkRtfMaxText-previous.size())fail(7,"RichTextBox text exceeds 4 Mi UTF-16 units");
@@ -217,8 +240,11 @@ void connect(GtkControl& c,GtkRichText& state) {
     apply(owner,state,insertion.first,insertion.first+insertion.count,insertion.style);state.typing=insertion.style;state.trailing=insertion.style;
     state.selection=selection(buffer);state.typingOverride=true;if(state.operationDepth)--state.operationDepth;emitChange(owner);
   });}),c.self(),true);
-  signal(state.buffer,"delete-range",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextIter*,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer==buffer)++state.operationDepth;});}),c.self());
-  signal(state.buffer,"delete-range",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextIter*,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer!=buffer)return;if(state.operationDepth)--state.operationDepth;state.typingOverride=false;gtkRichSelectionChanged(owner,false);emitChange(owner);});}),c.self(),true);
+  signal(state.buffer,"delete-range",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter* first,GtkTextIter* last,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer!=buffer)return;
+    int a=gtk_text_iter_get_offset(first),b=gtk_text_iter_get_offset(last);for(const auto& object:state.objects){GtkTextIter start;if(!liveObject(state,object,&start))continue;auto x=gtk_text_iter_get_offset(&start),y=x+int(object.value.last-object.value.first);if(a<y&&b>x){a=std::min(a,x);b=std::max(b,y);}}
+    gtk_text_buffer_get_iter_at_offset(buffer,first,a);gtk_text_buffer_get_iter_at_offset(buffer,last,b);++state.operationDepth;
+  });}),c.self());
+  signal(state.buffer,"delete-range",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextIter*,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer!=buffer)return;state.objects.erase(std::remove_if(state.objects.begin(),state.objects.end(),[&](const auto& object){return !liveObject(state,object);}),state.objects.end());if(state.operationDepth)--state.operationDepth;state.typingOverride=false;gtkRichSelectionChanged(owner,false);emitChange(owner);});}),c.self(),true);
   signal(state.buffer,"changed",G_CALLBACK(+[](GtkTextBuffer* buffer,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer==buffer){state.dirty=true;emitChange(owner);}});}),c.self());
   signal(state.buffer,"mark-set",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextMark* mark,gpointer data){gtkEvent(data,[&](GtkControl& owner){auto& state=rich(owner);if(state.buffer!=buffer||state.selecting||state.operationDepth||owner.suppressEvents)return;
     if(mark!=gtk_text_buffer_get_insert(buffer)&&mark!=gtk_text_buffer_get_selection_bound(buffer))return;
@@ -231,17 +257,105 @@ void connect(GtkControl& c,GtkRichText& state) {
 #endif
   signal(state.buffer,"insert-child-anchor",G_CALLBACK(+[](GtkTextBuffer* buffer,GtkTextIter*,GtkTextChildAnchor*,gpointer data){g_signal_stop_emission_by_name(buffer,"insert-child-anchor");gtkEvent(data,[](GtkControl&){fail(453,"RichTextBox embedded objects are unavailable");});}),c.self());
 }
+std::shared_ptr<GtkRichText> prepare(GtkControl&,const GtkRtfDocument&);
+void attachObjects(GtkControl&);
+void attachRichDrawing(GtkControl& c) {
+  g_object_set_data_full(G_OBJECT(c.widget),"vb6-control",new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data){delete static_cast<std::weak_ptr<GtkControl>*>(data);});
+#if GTK_MAJOR_VERSION < 4
+  g_signal_connect_data(c.widget,"draw",G_CALLBACK(+[](GtkWidget*,cairo_t* context,gpointer data)->gboolean {gtkEvent(data,[&](GtkControl& owner){gtkRichDraw(owner,context);});return FALSE;}),new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data,GClosure*){delete static_cast<std::weak_ptr<GtkControl>*>(data);},G_CONNECT_AFTER);
+#endif
+}
+GdkPixbuf* picturePixels(const GtkRtfObject& object) {
+  std::string bytes=object.bytes;const char* format=object.format=="pngblip"?"png":object.format=="jpegblip"?"jpeg":"bmp";
+  if(object.format=="dibitmap") {
+    auto u32=[&](size_t at){if(at+4>bytes.size())fail(380,"Invalid RTF DIB header");uint32_t value=0;for(size_t i=0;i<4;++i)value|=uint32_t(uint8_t(bytes[at+i]))<<(i*8);return value;};
+    const auto header=u32(0),colors=u32(32),compression=u32(16);auto bits=uint8_t(bytes[14])|(uint8_t(bytes[15])<<8);uint64_t offset=14+uint64_t(header)+(colors?colors:bits<=8?1u<<bits:0)*4u+(header==40&&compression==3?12:0);
+    if(offset>bytes.size()+14)fail(380,"Invalid RTF DIB color table");std::string file(14,'\0');file[0]='B';file[1]='M';auto write=[&](size_t at,uint32_t value){for(size_t i=0;i<4;++i)file[at+i]=char(value>>(8*i));};write(2,uint32_t(bytes.size()+14));write(10,uint32_t(offset));bytes=file+bytes;
+  }
+  GError* error=nullptr;auto* loader=gdk_pixbuf_loader_new_with_type(format,&error);
+  if(!loader){std::string detail=error?error->message:"Native image codec unavailable";if(error)g_error_free(error);fail(453,detail);}
+  std::unique_ptr<GdkPixbufLoader,decltype(&g_object_unref)> owned(loader,g_object_unref);
+  struct Dimensions {int width,height;bool invalid=false;} dimensions{object.width,object.height,false};
+  g_signal_connect(loader,"size-prepared",G_CALLBACK(+[](GdkPixbufLoader* decoder,int width,int height,gpointer value){auto& expected=*static_cast<Dimensions*>(value);if(width!=expected.width||height!=expected.height||width<=0||height<=0||width>8192||height>8192||uint64_t(width)*height>GtkRtfMaxImagePixels){expected.invalid=true;gdk_pixbuf_loader_set_size(decoder,1,1);}}),&dimensions);
+  bool valid=gdk_pixbuf_loader_write(loader,reinterpret_cast<const guchar*>(bytes.data()),bytes.size(),&error);
+  if(valid)valid=gdk_pixbuf_loader_close(loader,&error);else gdk_pixbuf_loader_close(loader,nullptr);
+  if(!valid||dimensions.invalid){std::string detail=error?error->message:"RTF image dimensions changed during decode";if(error)g_error_free(error);fail(dimensions.invalid?7:380,"Invalid RTF image: "+detail);}
+  auto* source=gdk_pixbuf_loader_get_pixbuf(loader);if(!source)fail(380,"RTF picture has no pixels");
+  const double factorX=object.scaleX/1500.0,factorY=object.scaleY/1500.0;
+  const auto width=std::max(1,int(std::lround((object.widthGoal-object.cropLeft-object.cropRight)*factorX))),height=std::max(1,int(std::lround((object.heightGoal-object.cropTop-object.cropBottom)*factorY)));
+  if(width>8192||height>8192||uint64_t(width)*height>GtkRtfMaxImagePixels)fail(7,"RTF scaled image exceeds pixel limits");
+  if(width==object.width&&height==object.height&&!object.cropLeft&&!object.cropRight&&!object.cropTop&&!object.cropBottom)return GDK_PIXBUF(g_object_ref(source));
+  auto* target=gdk_pixbuf_new(GDK_COLORSPACE_RGB,TRUE,8,width,height);if(!target)fail(7,"Cannot allocate RTF picture");gdk_pixbuf_fill(target,0);
+  const auto offsetX=-object.cropLeft*factorX,offsetY=-object.cropTop*factorY;
+  const auto firstX=std::clamp(int(std::floor(offsetX)),0,width),firstY=std::clamp(int(std::floor(offsetY)),0,height);
+  const auto lastX=std::clamp(int(std::ceil(offsetX+object.widthGoal*factorX)),0,width),lastY=std::clamp(int(std::ceil(offsetY+object.heightGoal*factorY)),0,height);
+  if(lastX>firstX&&lastY>firstY)gdk_pixbuf_scale(source,target,firstX,firstY,lastX-firstX,lastY-firstY,offsetX,offsetY,object.widthGoal*factorX/object.width,object.heightGoal*factorY/object.height,GDK_INTERP_BILINEAR);return target;
+}
+std::shared_ptr<GtkControl> childEditor(GtkControl& parent,const GtkRtfDocument& document,int background=-1) {
+  ControlSpec spec;spec.name="_rtf_content";spec.type="RichTextBox";auto child=std::make_shared<GtkControl>(*parent.host,parent.owner.lock(),std::move(spec));
+  for(const auto& name:{"fontname","fontsize","fontbold","fontitalic","forecolor","backcolor"})if(parent.properties.count(name))child->properties[name]=parent.properties.at(name);
+  if(background>=0)child->properties["backcolor"]=Value::integer(background);
+  child->widget=child->content=child->view=gtkNativeTextViewNew();g_object_ref_sink(child->view);
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(child->widget),GTK_WRAP_WORD_CHAR);gtk_text_view_set_editable(GTK_TEXT_VIEW(child->widget),gtk_text_view_get_editable(GTK_TEXT_VIEW(parent.widget)));
+  child->richText=prepare(*child,document);child->richText->parent=parent.self();gtk_text_view_set_buffer(GTK_TEXT_VIEW(child->widget),child->richText->buffer);attachRichDrawing(*child);
+  attachObjects(*child);
+  if(background>=0){auto color=gtkColor(background);gtk_widget_override_background_color(child->widget,GTK_STATE_FLAG_NORMAL,&color);}
+  return child;
+}
+std::shared_ptr<GtkRichText::Presentation> presentation(GtkControl& c,const GtkRtfObject& object) {
+  auto result=std::make_shared<GtkRichText::Presentation>();
+  if(object.kind==GtkRtfObject::Picture){result->image=picturePixels(object);return result;}
+  auto* container=object.kind==GtkRtfObject::TableRow?gtk_grid_new():gtk_box_new(GTK_ORIENTATION_VERTICAL,3);result->widget=GTK_WIDGET(g_object_ref_sink(container));
+  if(object.kind==GtkRtfObject::TableRow) {
+    int left=object.left;
+    for(size_t i=0;i<object.cells.size();++i){const auto& cell=object.cells[i];if(cell.merge==2){left=cell.right;continue;}auto end=i+1;while(end<object.cells.size()&&object.cells[end].merge==2)++end;
+      auto child=childEditor(c,*cell.content,cell.background);auto* box=gtk_box_new(GTK_ORIENTATION_VERTICAL,0);gtk_container_add(GTK_CONTAINER(box),child->view);
+      gtk_widget_set_size_request(box,std::max(1,pixels(object.cells[end-1].right-left)),std::max(-1,pixels(std::abs(object.height))));gtk_widget_set_hexpand(child->view,TRUE);gtk_widget_set_vexpand(child->view,TRUE);
+      gtk_widget_set_valign(child->view,cell.vertical==1?GTK_ALIGN_CENTER:cell.vertical==2?GTK_ALIGN_END:GTK_ALIGN_FILL);
+      gtk_grid_attach(GTK_GRID(container),box,int(i),0,int(end-i),1);result->children.push_back(std::move(child));
+      auto* provider=gtk_css_provider_new();std::string css="* { padding: "+std::to_string(pixels(object.gap))+"px;";static const char* sides[]={"top","right","bottom","left"};static const char* styles[]={"none","solid","double","dashed","dotted"};
+      for(size_t edge=0;edge<4;++edge){const auto& border=edge==1?object.cells[end-1].borders[edge]:cell.borders[edge];auto color=gtkColor(border.color<0?int64_t(c.number("forecolor",0)):border.color);auto* encoded=gdk_rgba_to_string(&color);css+="border-"+std::string(sides[edge])+": "+std::to_string(border.style?std::max(1,pixels(border.width)):0)+"px "+styles[border.style]+" "+encoded+";";g_free(encoded);}
+      if(cell.background>=0){auto color=gtkColor(cell.background);auto* encoded=gdk_rgba_to_string(&color);css+="background-color: "+std::string(encoded)+";";g_free(encoded);}css+='}';
+#if GTK_MAJOR_VERSION < 4
+      gtk_css_provider_load_from_data(provider,css.c_str(),-1,nullptr);
+#else
+      gtk_css_provider_load_from_data(provider,css.c_str(),-1);
+#endif
+      gtk_style_context_add_provider(gtk_widget_get_style_context(box),GTK_STYLE_PROVIDER(provider),GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);g_object_unref(provider);left=cell.right;
+    }
+    gtk_widget_set_margin_start(container,pixels(std::max(0,object.left)));gtk_widget_set_halign(container,object.alignment==1?GTK_ALIGN_END:object.alignment==2?GTK_ALIGN_CENTER:GTK_ALIGN_START);
+  }else {
+    const auto label=object.kind==GtkRtfObject::Embedded?(object.label.empty()?std::string("Embedded object preview"):toUTF8(object.label)+" — preview"):object.destination.rfind("header",0)==0?std::string("Header"):object.destination.rfind("footer",0)==0?std::string("Footer"):object.destination=="annotation"?std::string("Comment"):object.destination=="endnote"?std::string("Endnote"):std::string("Footnote");
+    auto* title=gtk_label_new(label.c_str());gtk_label_set_xalign(GTK_LABEL(title),0);gtk_container_add(GTK_CONTAINER(container),title);auto child=childEditor(c,*object.content);gtk_container_add(GTK_CONTAINER(container),child->view);gtk_widget_set_hexpand(child->view,TRUE);result->children.push_back(std::move(child));
+    gtk_widget_set_size_request(container,std::max(120,pixels(object.widthGoal?object.widthGoal:int(c.number("width",4500)))-30),-1);
+  }
+  gtk_widget_show_all(container);return result;
+}
+void attachObjects(GtkControl& c) {
+  for(auto& object:rich(c).objects)if(object.anchor&&object.presentation->widget)gtk_text_view_add_child_at_anchor(GTK_TEXT_VIEW(c.widget),object.presentation->widget,object.anchor);
+}
 std::shared_ptr<GtkRichText> prepare(GtkControl& c,const GtkRtfDocument& document) {
-  gtkRtfValidateText(document.text);validateStyle(document.emptyStyle);
+  gtkRtfValidateText(document.text);gtkRtfValidateObjects(document);validateStyle(document.emptyStyle);
   auto result=std::make_shared<GtkRichText>();result->buffer=gtk_text_buffer_new(nullptr);result->metadata=document.metadata;result->typing=result->trailing=document.emptyStyle;
   auto utf8=toUTF8(document.text);gtk_text_buffer_set_text(result->buffer,utf8.data(),int(utf8.size()));
+  for(const auto& object:document.objects) {
+    auto native=presentation(c,object);GtkTextIter first,last;auto offset=scalarOffset(document.text,object.first);gtk_text_buffer_get_iter_at_offset(result->buffer,&first,offset);last=first;gtk_text_iter_forward_char(&last);gtk_text_buffer_delete(result->buffer,&first,&last);GtkTextChildAnchor* anchor=nullptr;
+    if(object.kind==GtkRtfObject::Picture) {
+#if GTK_MAJOR_VERSION < 4
+      gtk_text_buffer_insert_pixbuf(result->buffer,&first,native->image);
+#else
+      native->paintable=G_OBJECT(gdk_texture_new_for_pixbuf(native->image));gtk_text_buffer_insert_paintable(result->buffer,&first,GDK_PAINTABLE(native->paintable));
+#endif
+    }else {anchor=gtk_text_buffer_create_child_anchor(result->buffer,&first);native->anchor=GTK_TEXT_CHILD_ANCHOR(g_object_ref(anchor));}
+    gtk_text_buffer_get_iter_at_offset(result->buffer,&first,offset);auto* mark=gtk_text_buffer_create_mark(result->buffer,nullptr,&first,FALSE);native->mark=GTK_TEXT_MARK(g_object_ref(mark));result->objects.push_back({mark,anchor,object,std::move(native)});
+  }
   size_t previous=0;int scalar=0;
   for(const auto& run:document.runs) {
     if(run.first!=previous||run.last<=run.first||run.last>document.text.size())fail(380,"Invalid rich formatting ranges");
     int count=scalarOffset(document.text.substr(run.first,run.last-run.first),run.last-run.first);apply(c,*result,scalar,scalar+count,run.style);scalar+=count;previous=run.last;
   }
   if(previous!=document.text.size())fail(380,"Rich text lacks attributed runs");
-  for(const auto& field:document.fields){if(field.first>field.last||field.last>document.text.size())fail(380,"Invalid rich field range");GtkTextIter a,b;gtk_text_buffer_get_iter_at_offset(result->buffer,&a,scalarOffset(document.text,field.first));gtk_text_buffer_get_iter_at_offset(result->buffer,&b,scalarOffset(document.text,field.last));result->fields.push_back({gtk_text_buffer_create_mark(result->buffer,nullptr,&a,TRUE),gtk_text_buffer_create_mark(result->buffer,nullptr,&b,FALSE),field});}
+  for(const auto& field:document.fields){if(field.first>field.last||field.last>document.text.size())fail(380,"Invalid rich field range");GtkTextIter a,b;gtk_text_buffer_get_iter_at_offset(result->buffer,&a,scalarOffset(document.text,field.first));gtk_text_buffer_get_iter_at_offset(result->buffer,&b,scalarOffset(document.text,field.last));result->fields.push_back({GTK_TEXT_MARK(g_object_ref(gtk_text_buffer_create_mark(result->buffer,nullptr,&a,TRUE))),GTK_TEXT_MARK(g_object_ref(gtk_text_buffer_create_mark(result->buffer,nullptr,&b,FALSE))),field});}
   // Register GTK's structured format as well as plain text for native copy/paste.
 #if GTK_MAJOR_VERSION < 4
   gtk_text_buffer_register_serialize_tagset(result->buffer,nullptr);gtk_text_buffer_register_deserialize_tagset(result->buffer,nullptr);
@@ -249,7 +363,8 @@ std::shared_ptr<GtkRichText> prepare(GtkControl& c,const GtkRtfDocument& documen
   connect(c,*result);return result;
 }
 bool equal(const GtkRtfDocument& a,const GtkRtfDocument& b) {
-  if(a.text!=b.text||a.metadata!=b.metadata||a.emptyStyle!=b.emptyStyle||a.fields!=b.fields)return false;
+  if(a.text!=b.text||a.metadata!=b.metadata||a.emptyStyle!=b.emptyStyle||a.fields!=b.fields||a.objects.size()!=b.objects.size())return false;
+  if(!a.objects.empty()&&gtkRtfWrite(a)!=gtkRtfWrite(b))return false;
   size_t i=0,j=0;
   while(i<a.runs.size()&&j<b.runs.size()) {
     if(a.runs[i].style!=b.runs[j].style)return false;
@@ -261,6 +376,7 @@ void commit(GtkControl& c,const GtkRtfDocument& document,size_t start,size_t len
   auto prepared=prepare(c,document); // All parsing, validation, allocation and tag
   // construction finish before replacing the buffer displayed by the control.
   auto previous=c.richText;
+  prepared->parent=previous->parent;
   {
     GtkEventSuppression suppression(c);
     auto* view=GTK_TEXT_VIEW(c.widget);auto wrap=gtk_text_view_get_wrap_mode(view);
@@ -271,6 +387,7 @@ void commit(GtkControl& c,const GtkRtfDocument& document,size_t start,size_t len
     gtk_text_view_set_wrap_mode(view,wrap==GTK_WRAP_NONE?GTK_WRAP_WORD_CHAR:GTK_WRAP_NONE);
     gtk_text_view_set_wrap_mode(view,wrap);
     c.richText=prepared;gtk_text_view_set_buffer(view,prepared->buffer);
+    attachObjects(c);
     nativeSelection(*prepared,scalarOffset(document.text,start),scalarOffset(document.text,start+length));
     prepared->typing=insertionStyle(c,prepared->selection.first);prepared->typingOverride=false;
     c.properties["text"]=Value::string(document.text);gtk_text_buffer_set_modified(prepared->buffer,changed||gtk_text_buffer_get_modified(previous->buffer));
@@ -284,15 +401,17 @@ GtkRtfDocument slice(const GtkRtfDocument& document,size_t first,size_t last) {
   }
   if(last==document.text.size()&&(!last||gtkRtfParagraphEnd(document.text,last-1)))result.emptyStyle=document.emptyStyle;
   for(auto field:document.fields)if(field.first>=first&&field.last<=last){field.first-=first;field.last-=first;result.fields.push_back(std::move(field));}
+  for(auto object:document.objects)if(object.first<last&&object.last>first){if(object.first<first||object.last>last)fail(380,"A rich embedded object must be selected as a complete object");object.first-=first;object.last-=first;result.objects.push_back(std::move(object));}
   return result;
 }
 void appendDocument(GtkRtfDocument& destination,const GtkRtfDocument& source) {
   const auto offset=destination.text.size();for(auto field:source.fields){field.first+=offset;field.last+=offset;destination.fields.push_back(std::move(field));}
+  for(auto object:source.objects){object.first+=offset;object.last+=offset;destination.objects.push_back(std::move(object));}
   for(const auto& run:source.runs)gtkRtfAppend(destination,source.text.substr(run.first,run.last-run.first),run.style);
   destination.emptyStyle=source.emptyStyle;
 }
 GtkRtfDocument normalizeParagraphs(const GtkRtfDocument& source) {
-  GtkRtfDocument result;result.metadata=source.metadata;result.fields=source.fields;auto paragraph=source.emptyStyle.paragraph;bool first=true;
+  GtkRtfDocument result;result.metadata=source.metadata;result.fields=source.fields;result.objects=source.objects;auto paragraph=source.emptyStyle.paragraph;bool first=true;
   for(const auto& run:source.runs)for(auto at=run.first;at<run.last;) {
     auto style=run.style;if(first)paragraph=style.paragraph;style.paragraph=paragraph;
     auto end=at;do {++end;}while(end<run.last&&!gtkRtfParagraphEnd(source.text,end-1));
@@ -361,6 +480,7 @@ void formatted(GtkRtfStyle& style,const std::string& name,const Value& value,int
 void setAttribute(GtkControl& c,const std::string& name,Value value,int index=-1) {
   value=checked(name,std::move(value));auto& state=rich(c);gtkRichSelectionChanged(c,false);
   auto range=c.editSelection();auto original=gtkRichSnapshot(c);auto first=range.first,last=first+range.second;
+  if(first!=last)for(const auto& object:original.objects)if(first<object.last&&last>object.first){first=std::min(first,object.first);last=std::max(last,object.last);}
   auto typing=state.typing;formatted(typing,name,value,index); // Validate caret value before any mutation.
   if(paragraphProperty(name)&&!original.text.empty()) {
     while(first&&!gtkRtfParagraphEnd(original.text,first-1))--first;
@@ -368,7 +488,7 @@ void setAttribute(GtkControl& c,const std::string& name,Value value,int index=-1
     else {if(last>range.first&&last&&gtkRtfParagraphEnd(original.text,last-1)){}else {while(last<original.text.size()&&(last==first||!gtkRtfParagraphEnd(original.text,last-1)))++last;}}
   }
   if(first==last) {state.typing=typing;state.typingOverride=true;if(first==original.text.size())state.trailing=typing;return;}
-  GtkRtfDocument next;next.metadata=original.metadata;next.fields=original.fields;next.emptyStyle=original.emptyStyle;
+  GtkRtfDocument next;next.metadata=original.metadata;next.fields=original.fields;next.objects=original.objects;next.emptyStyle=original.emptyStyle;
   for(const auto& run:original.runs) {
     auto before=std::min(run.last,first);if(run.first<before)gtkRtfAppend(next,original.text.substr(run.first,before-run.first),run.style);
     auto a=std::max(run.first,first),b=std::min(run.last,last);
@@ -405,11 +525,7 @@ void gtkRichInitialize(GtkControl& c) {
   if(c.spec.type!="RichTextBox"||c.richText)return;
   GtkRtfDocument document;document.emptyStyle=defaults(c);c.richText=prepare(c,document);
   gtk_text_view_set_buffer(GTK_TEXT_VIEW(c.widget),c.richText->buffer);nativeSelection(*c.richText,0,0);
-#if GTK_MAJOR_VERSION < 4
-  g_signal_connect_data(c.widget,"draw",G_CALLBACK(+[](GtkWidget*,cairo_t* context,gpointer data)->gboolean {gtkEvent(data,[&](GtkControl& owner){gtkRichDraw(owner,context);});return FALSE;}),new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data,GClosure*){delete static_cast<std::weak_ptr<GtkControl>*>(data);},G_CONNECT_AFTER);
-#else
-  g_object_set_data_full(G_OBJECT(c.widget),"vb6-rich-owner",new std::weak_ptr<GtkControl>(c.self()),+[](gpointer data){delete static_cast<std::weak_ptr<GtkControl>*>(data);});
-#endif
+  attachRichDrawing(c);
 }
 void gtkRichDispose(GtkControl& c) {c.richText.reset();}
 void gtkRichSelectionChanged(GtkControl& c,bool fire) {
@@ -417,12 +533,20 @@ void gtkRichSelectionChanged(GtkControl& c,bool fire) {
   if(state.selectionIdle){g_source_remove(state.selectionIdle);state.selectionIdle=0;}
   auto current=selection(state.buffer);if(current==state.selection)return;
   state.selection=current;state.typing=insertionStyle(c,current.first);state.typingOverride=false;
-  if(fire)c.event("selchange");
+  if(fire&&state.parent.expired())c.event("selchange");
 }
 GtkRtfDocument gtkRichSnapshot(GtkControl& c) {
   auto& state=rich(c);GtkRtfDocument document;document.emptyStyle=state.trailing;document.metadata=state.metadata;
   GtkTextIter iter,end;gtk_text_buffer_get_bounds(state.buffer,&iter,&end);
+  std::map<int,const GtkRichText::Embedded*> objects;for(const auto& object:state.objects){GtkTextIter at;if(liveObject(state,object,&at))objects.emplace(gtk_text_iter_get_offset(&at),&object);}
   while(gtk_text_iter_compare(&iter,&end)<0) {
+    auto embedded=objects.find(gtk_text_iter_get_offset(&iter));
+    if(embedded!=objects.end()) {
+      const auto& original=*embedded->second;auto object=original.value;object.first=document.text.size();auto next=iter;gtk_text_iter_forward_chars(&next,int(object.last-original.value.first));auto* content=gtk_text_buffer_get_slice(state.buffer,&iter,&next,TRUE);std::unique_ptr<gchar,decltype(&g_free)> owned(content,g_free);gtkRtfAppend(document,fromUTF8(content),nativeStyle(c,iter));object.last=document.text.size();
+      if(object.kind==GtkRtfObject::TableRow){size_t index=0;for(auto& cell:object.cells)if(cell.merge!=2)cell.content=std::make_shared<GtkRtfDocument>(gtkRichSnapshot(*original.presentation->children.at(index++)));}
+      else if(object.content)object.content=std::make_shared<GtkRtfDocument>(gtkRichSnapshot(*original.presentation->children.at(0)));
+      document.objects.push_back(std::move(object));iter=next;continue;
+    }
 #if GTK_MAJOR_VERSION < 4
     if(gtk_text_iter_get_pixbuf(&iter)||gtk_text_iter_get_child_anchor(&iter))fail(453,"RichTextBox contains unsupported embedded content");
 #else
@@ -430,7 +554,8 @@ GtkRtfDocument gtkRichSnapshot(GtkControl& c) {
 #endif
     auto next=iter;if(!gtk_text_iter_forward_to_tag_toggle(&next,nullptr))next=end;if(gtk_text_iter_compare(&next,&end)>0)next=end;
     auto line=iter;gtk_text_iter_forward_line(&line);if(gtk_text_iter_compare(&line,&iter)>0&&gtk_text_iter_compare(&line,&next)<0)next=line;
-    auto* text=gtk_text_buffer_get_text(state.buffer,&iter,&next,TRUE);std::unique_ptr<gchar,decltype(&g_free)> owned(text,g_free);
+    auto object=objects.upper_bound(gtk_text_iter_get_offset(&iter));if(object!=objects.end()&&object->first<gtk_text_iter_get_offset(&next))gtk_text_buffer_get_iter_at_offset(state.buffer,&next,object->first);
+    auto* text=gtk_text_buffer_get_slice(state.buffer,&iter,&next,TRUE);std::unique_ptr<gchar,decltype(&g_free)> owned(text,g_free);
     gtkRtfAppend(document,fromUTF8(text),nativeStyle(c,iter));iter=next;
   }
   for(const auto& field:state.fields){if(gtk_text_mark_get_deleted(field.first)||gtk_text_mark_get_deleted(field.last))continue;GtkTextIter a,b;gtk_text_buffer_get_iter_at_mark(state.buffer,&a,field.first);gtk_text_buffer_get_iter_at_mark(state.buffer,&b,field.last);auto copy=field.value;copy.first=utf16Offset(document.text,gtk_text_iter_get_offset(&a));copy.last=utf16Offset(document.text,gtk_text_iter_get_offset(&b));document.fields.push_back(std::move(copy));}
