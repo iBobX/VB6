@@ -81,16 +81,13 @@ class NativeProjects(unittest.TestCase):
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
         self.mode = 'memory' if os.environ.get('VB6_TEST_TRANSPORT') == 'memory' else 'file' if self._testMethodName.endswith('_file') else 'http'
         if self.mode == 'memory':
-            self.page.set_content((ROOT / 'dist' / 'VB6-Studio-Web.html').read_text())
-        elif self.mode == 'file':
-            # The large standalone bundle can exceed WebKit's ordinary startup
-            # deadline. Give only file startup its existing standalone budget;
-            # HTTP readiness and all actual interactions retain the 6s limit.
-            self.page.goto((ROOT / 'dist' / 'VB6-Studio-Web.html').as_uri(), wait_until='commit')
+            self.page.set_content((ROOT / 'dist' / 'VB6-Studio-Web.html').read_text(), timeout=60000)
         else:
-            self.page.goto(self.http_url)
+            self.page.goto((ROOT / 'dist' / 'VB6-Studio-Web.html').as_uri() if self.mode == 'file' else self.http_url, wait_until='commit')
+        # Parsing the standalone IDE can exceed the action deadline in WebKit.
+        # Wait for the real authoring API; keep every later action/assertion at 6s.
         self.page.wait_for_function('typeof vb6Studio === "object" && vb6Studio.root?.isConnected && typeof vb6Studio.importProjectEntries === "function"',
-                                    polling=100, timeout=60000 if self.mode == 'file' else 6000)
+                                    polling=100, timeout=60000)
 
     def tearDown(self):
         if self.errors: (REPORT / f'{self.engine}-{self._testMethodName}-errors.json').write_text(json.dumps(self.errors, indent=2))
