@@ -35,6 +35,7 @@ for(const size of MACOS26_CONTROL_SIZES)test('control size '+size+' leaves autho
 for(const [type,p] of [
   ['Label',{MacOSControlStyle:'default'}],['CommandButton',{MacOSControlStyle:'switch'}],
   ['CommandButton',{MacOSControlStyle:'segmented'}],['TextBox',{MacOSControlStyle:'segmented'}],
+  ['SSTab',{MacOSControlStyle:'segmented',TabOrientation:2}],['TabStrip',{MacOSControlStyle:'segmented',TabOrientation:3}],
   ['CheckBox',{MacOSControlStyle:'switch',Value:2}],['CheckBox',{MacOSControlStyle:'switch',Value:0.5}],
   ['TextBox',{MacOSControlStyle:'search',MultiLine:-1}],['TextBox',{MacOSControlStyle:'search',PasswordChar:'*'}],
   ['Slider',{MacOSMaterial:'sidebar'}],['Label',{MacOSIndeterminate:-1}],

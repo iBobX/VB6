@@ -14,7 +14,7 @@ FIXTURE = ROOT / 'reports/application-themes/fixtures'
 class MacOS26CompatibilityChecks:
     def macos26_runtime(self):
         self.load(FIXTURE / 'macos26-compat.html')
-        self.page.wait_for_function('globalThis.vb6Application?.forms?.[0]?.controls?.length === 12')
+        self.page.wait_for_function('globalThis.vb6Application?.forms?.[0]?.controls?.length === 19')
         self.page.evaluate('''() => {
             window.compatControls=Object.fromEntries(vb6Application.forms[0].controls.map(c=>[c.model.name,c]));
             window.compatIdentity=vb6Application.forms[0].controls.map(c=>({control:c,node:c.node,input:c.input}));
@@ -30,7 +30,9 @@ class MacOS26CompatibilityChecks:
         project['settings'].update(xaml=xaml, anchoring=xaml)
         if xaml:
             project['modules'][0]['code'] = ('Option Explicit\nPrivate Sub Save_Click()\n'
-                '    ActionStatus.Caption = "saved:" & Search.Text & ":" & CStr(Notifications.Value)\nEnd Sub\n')
+                '    ActionStatus.Caption = "saved:" & Search.Text & ":" & CStr(Notifications.Value)\nEnd Sub\n'
+                'Private Sub Sections_ButtonClick(ByVal Button As Object)\n'
+                '    ActionStatus.Caption = "section:" & Button.Key & ":" & CStr(Button.Value)\nEnd Sub\n')
         ide.evaluate('p=>vb6Studio.loadProject(p)', project)
         return ide
 
@@ -258,6 +260,210 @@ class MacOS26CompatibilityChecks:
         expect(page.get_by_role('searchbox', name='Search settings', exact=True)).to_have_value('Ready')
         self.record('invalid target styles, roles, mixed switches, indeterminate targets and multiline searches fail atomically')
 
+    def test_macos26_segmented_single_multiple_and_momentary_dispatch_public_values_once(self):
+        page = self.macos26_runtime()
+        single = page.get_by_role('radiogroup',name='Single choice',exact=True)
+        first = single.get_by_role('radio',name='First',exact=True)
+        last = single.get_by_role('radio',name='Last',exact=True)
+        status = page.locator('[data-control="SegmentStatus"]')
+        expect(first).to_be_checked()
+        expect(single.get_by_role('radio',name='Disabled',exact=True)).to_be_disabled()
+        self.assertEqual(single.get_by_role('radio',name='Hidden',exact=True).count(),0)
+        expect(first).to_have_attribute('title','First choice')
+        first.press('ArrowRight')
+        expect(last).to_be_focused()
+        expect(last).to_be_checked()
+        expect(first).not_to_be_checked()
+        expect(status).to_have_text('1:single:last:1:0:1')
+        last.press('Home')
+        expect(first).to_be_focused()
+        expect(status).to_have_text('2:single:first:1:1:0')
+        first.press('End')
+        expect(status).to_have_text('3:single:last:1:0:1')
+        last.press('Enter')
+        expect(status).to_have_text('4:single:last:1:0:1')
+        expect(page.locator('[data-control="ActionStatus"]')).to_have_text('Not saved')
+        last.evaluate('''e=>{for(const key of ['ArrowLeft','Enter']){
+            e.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,isComposing:true}));
+            e.dispatchEvent(new KeyboardEvent('keydown',{key,bubbles:true,cancelable:true,keyCode:229}));
+        }}''')
+        single.locator('[data-toolbar-index="1"]').evaluate('e=>e.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true}))')
+        single.locator('[data-toolbar-index="2"]').evaluate('e=>e.click()')
+        self.macos26_set('Segments',{'Enabled':0})
+        expect(last).to_be_disabled()
+        last.evaluate('e=>e.dispatchEvent(new MouseEvent("click",{bubbles:true,cancelable:true}))')
+        expect(status).to_have_text('4:single:last:1:0:1')
+
+        multiple = page.get_by_role('group',name='Multiple choices',exact=True)
+        a = multiple.get_by_role('button',name='First',exact=True)
+        b = multiple.get_by_role('button',name='Last',exact=True)
+        a.press('Space')
+        expect(status).to_have_text('5:multiple:first:1:1:0')
+        expect(a).to_have_attribute('aria-pressed','true')
+        a.press('ArrowRight')
+        expect(b).to_be_focused()
+        expect(status).to_have_text('5:multiple:first:1:1:0')
+        b.press('Enter')
+        expect(status).to_have_text('6:multiple:last:1:1:1')
+        expect(b).to_have_attribute('aria-pressed','true')
+        b.press('Space')
+        expect(status).to_have_text('7:multiple:last:0:1:0')
+        expect(b).to_have_attribute('aria-pressed','false')
+        actions = page.get_by_role('group',name='Related actions',exact=True)
+        back = actions.get_by_role('button',name='First',exact=True)
+        forward = actions.get_by_role('button',name='Last',exact=True)
+        back.press('Enter')
+        expect(status).to_have_text('8:momentary:first:0:0:0')
+        back.press('ArrowRight')
+        expect(forward).to_be_focused()
+        forward.press('Space')
+        expect(status).to_have_text('9:momentary:last:0:0:0')
+        self.assertIsNone(forward.get_attribute('aria-pressed'))
+        self.assertIsNone(forward.get_attribute('aria-checked'))
+        expect(page.locator('[data-control="ActionStatus"]')).to_have_text('Not saved')
+        self.record('segmented radio/check/action modes expose real VB values before one event, skip unavailable members, preserve IME and own Enter/Space')
+
+    def test_macos26_segmented_live_collection_mutations_retain_identity_and_validate_atomically(self):
+        page = self.macos26_runtime()
+        single = page.get_by_role('radiogroup',name='Single choice',exact=True)
+        page.evaluate('''()=>{
+            window.segmentProject=JSON.stringify(vb6Application.project);
+            window.segmentIdentity=compatControls.Segments.Buttons.items.map((item,i)=>({item,node:compatControls.Segments.node.querySelector(`[data-toolbar-index="${i}"]`)}));
+            const c=compatControls.Segments,added=c.Buttons.Add(2,'inserted','Inserted',2);
+            added.Value=1;c.Buttons.Item('first').Caption='Renamed';
+        }''')
+        inserted = single.get_by_role('radio',name='Inserted',exact=True)
+        expect(inserted).to_be_checked()
+        expect(single.get_by_role('radio',name='Renamed',exact=True)).not_to_be_checked()
+        inserted.focus()
+        for theme in ('macos26-dark','classic','fluent','macos26'):
+            self.theme(theme,{'reduceMotion':True})
+            expect(inserted).to_be_focused()
+            self.assertTrue(page.evaluate('segmentIdentity.every(({item,node})=>compatControls.Segments.Buttons.items.includes(item)&&node===compatControls.Segments.node.querySelector(`[data-toolbar-index="${item.Index-1}"]`))'))
+            self.assertEqual(page.evaluate('JSON.stringify(vb6Application.project)'),page.evaluate('segmentProject'))
+        page.evaluate('compatControls.Segments.Buttons.Remove("inserted")')
+        renamed = single.get_by_role('radio',name='Renamed',exact=True)
+        last = single.get_by_role('radio',name='Last',exact=True)
+        expect(inserted).to_have_count(0)
+        expect(renamed).to_be_focused()
+        page.evaluate('compatControls.Segments.Buttons.Item("first").Visible=0')
+        expect(renamed).to_have_count(0)
+        expect(last).to_be_focused()
+        page.evaluate('compatControls.Segments.Buttons.Item("hidden").Value=1')
+        expect(last).not_to_be_checked()
+        self.assertEqual(page.evaluate('compatControls.Segments.Buttons.items.map(b=>b.Value)'),[0,0,1,0])
+        errors = page.evaluate('''()=>{
+            const c=compatControls.Segments,results=[];
+            for(const change of [()=>c.Buttons.Add(undefined,'bad','Bad',3),()=>c.Buttons.Item('first').Style=1,()=>c.Buttons.Item('last').Value=2]){
+                const before=JSON.stringify(c.Buttons.items);let number=0;try{change()}catch(error){number=error.number}
+                results.push({number,unchanged:before===JSON.stringify(c.Buttons.items)});
+            }
+            c.set('MacOSControlStyle','automatic');c.Buttons.Add(undefined,'separator','',3);
+            let number=0;try{c.set('MacOSControlStyle','segmented')}catch(error){number=error.number}
+            results.push({number,unchanged:c.props.MacOSControlStyle==='automatic'});
+            c.Buttons.Remove('separator');c.set('MacOSControlStyle','segmented');
+            return results;
+        }''')
+        self.assertEqual(errors,[{'number':380,'unchanged':True}]*4)
+        expect(page.locator('[data-control="SegmentStatus"]')).to_have_text('No segment action')
+        self.assertEqual(page.evaluate('JSON.stringify(vb6Application.project)'),page.evaluate('segmentProject'))
+        self.record('live segmented insertion/removal/rename/visibility keeps surviving objects and DOM, repairs focus and validates prospective collection and live style atomically')
+
+    def test_macos26_segmented_tabs_keep_pages_flags_editors_and_authored_geometry(self):
+        page = self.macos26_runtime()
+        tabs = page.locator('[data-control="SegmentPages"]')
+        header = tabs.locator('.vb-tab-header')
+        general = tabs.get_by_role('tab',name='General',exact=True)
+        advanced = tabs.get_by_role('tab',name='Advanced',exact=True)
+        expect(tabs.get_by_role('tab',name='Disabled',exact=True)).to_be_disabled()
+        self.assertEqual(tabs.get_by_role('tab',name='Hidden',exact=True).count(),0)
+        self.assertEqual(header.bounding_box()['height'],24,'segmented presentation ignores classic TabsPerRow wrapping')
+        bounds = tabs.bounding_box()
+        page.evaluate('window.segmentTabButtons=[...compatControls.SegmentPages.tabHeader.children]')
+        general.press('End')
+        expect(advanced).to_be_focused()
+        expect(advanced).to_have_attribute('aria-selected','true')
+        self.assertEqual(page.evaluate('compatControls.SegmentPages.Tab'),3)
+        editor = page.locator('[data-control="SegmentAdvanced"] input')
+        expect(editor).to_be_visible()
+        editor.fill('Retained advanced text')
+        editor.evaluate('e=>{window.segmentPageEditor=e;e.setSelectionRange(2,9,"backward");}')
+        self.macos26_set('SegmentPages',{'Tab':0})
+        expect(general).to_be_focused()
+        expect(editor).to_be_hidden()
+        self.macos26_set('SegmentPages',{'Tab':3})
+        expect(editor).to_have_value('Retained advanced text')
+        self.assertEqual(editor.evaluate('e=>[e===segmentPageEditor,e.selectionStart,e.selectionEnd,e.selectionDirection]'),[True,2,9,'backward'])
+        page.evaluate('compatControls.SegmentPages.setIndexed("TabCaption",[3],"Expert")')
+        expect(tabs.get_by_role('tab',name='Expert',exact=True)).to_have_attribute('aria-selected','true')
+        self.assertTrue(page.evaluate('segmentTabButtons.every((b,i)=>b===compatControls.SegmentPages.tabHeader.children[i])'))
+        self.macos26_set('SegmentPages',{'MacOSControlStyle':'automatic'})
+        expect(tabs).to_have_attribute('data-macos-control-style','automatic')
+        self.assertEqual(header.bounding_box()['height'],72)
+        self.macos26_set('SegmentPages',{'MacOSControlStyle':'segmented','TabOrientation':1,'MacOSMaterial':'sidebar'})
+        expect(tabs).to_have_attribute('data-tab-orientation','1')
+        self.assertEqual(header.bounding_box()['height'],24)
+        self.assertEqual(tabs.bounding_box(),bounds)
+        self.assertAlmostEqual(header.bounding_box()['y']+24,bounds['y']+bounds['height']-1,delta=1)
+        result=page.evaluate('''()=>{const c=compatControls.SegmentPages,before=JSON.stringify(c.props);let number=0;try{c.set('TabOrientation',2)}catch(error){number=error.number}return {number,unchanged:before===JSON.stringify(c.props)}}''')
+        self.assertEqual(result,{'number':380,'unchanged':True})
+        # Construct through the same public BrowserControl used by compiled
+        # forms, so initial TabStrip metadata is tested before any live edits.
+        page.evaluate('''()=>{
+            const source=compatControls.SegmentPages,model={id:'segmented-strip',name:'SegmentStrip',type:'TabStrip',properties:{...structuredClone(source.props),Tab:0,Left:5550,Top:3660,Height:420,TabOrientation:0,MacOSMaterial:'none'}};
+            model.properties.Tabs[0].ToolTipText='General page';
+            window.segmentStrip=new VB6Runtime.RuntimeAPI.BrowserControl(model,{vm:source.vm,instance:source.instance,form:source.form,backend:'canvas2d'});
+            source.form.content.append(segmentStrip.node);
+        }''')
+        try:
+            strip=page.locator('[data-control="SegmentStrip"]')
+            expect(strip.get_by_role('tab',name='Disabled',exact=True)).to_be_disabled()
+            self.assertEqual(strip.get_by_role('tab',name='Hidden',exact=True).count(),0)
+            expect(strip.get_by_role('tab',name='General',exact=True)).to_have_attribute('title','General page')
+            strip.get_by_role('tab',name='General',exact=True).press('ArrowRight')
+            expect(strip.get_by_role('tab',name='Expert',exact=True)).to_have_attribute('aria-selected','true')
+            self.assertEqual(page.evaluate('segmentStrip.Tab'),3)
+        finally:
+            page.evaluate('segmentStrip.dispose()')
+        self.record('segmented SSTab preserves logical indices, disabled/hidden flags, existing editors, child bounds, tab identity and one-row top/bottom layout')
+
+    def test_macos26_segmented_palette_focus_sizes_and_literal_colors(self):
+        page = self.macos26_runtime()
+        single = page.get_by_role('radiogroup',name='Single choice',exact=True)
+        first = single.get_by_role('radio',name='First',exact=True)
+        last = single.get_by_role('radio',name='Last',exact=True)
+        bounds=single.bounding_box()
+        for theme in ('macos26','macos26-dark'):
+            self.theme(theme,{'reduceMotion':True,'increaseContrast':True})
+            for size in ('mini','small','regular','large','extraLarge'):
+                self.macos26_set('Segments',{'MacOSControlSize':size})
+                expect(single).to_have_attribute('data-macos-control-size',size)
+                self.assertEqual(single.bounding_box(),bounds)
+                self.assertAlmostEqual(first.bounding_box()['width'],last.bounding_box()['width'],delta=0.05)
+                self.assertNotEqual(first.evaluate('e=>getComputedStyle(e).backgroundColor'),last.evaluate('e=>getComputedStyle(e).backgroundColor'))
+            first.press('ArrowRight')
+            expect(last).to_be_focused()
+            expect(last).to_have_css('outline-width','2px')
+            last.press('Home')
+            page.locator('[data-control="Segments"]').screenshot(path=str(FIXTURE.parent/(theme+'-segments.png')))
+        self.macos26_set('Segments',{'BackColor':0x00332211,'ForeColor':0x00665544})
+        for theme in ('macos26','macos26-dark','classic'):
+            self.theme(theme,{'reduceMotion':True})
+            expect(first).to_have_css('background-color','rgb(17, 34, 51)')
+            expect(first).to_have_css('color','rgb(68, 85, 102)')
+            expect(last).to_have_css('background-color','rgb(17, 34, 51)')
+        self.macos26_set('Segments',{'BackColor':-2147483633,'ForeColor':-2147483640})
+        self.theme('macos26')
+        page.emulate_media(forced_colors='active')
+        if page.evaluate('matchMedia("(forced-colors:active)").matches'):
+            expect(first).to_have_css('border-top-width','1px')
+            self.assertNotEqual(first.evaluate('e=>getComputedStyle(e).backgroundColor'),first.evaluate('e=>getComputedStyle(e).color'))
+            first.press('ArrowRight')
+            expect(last).to_have_css('outline-width','2px')
+            expect(last).to_have_attribute('aria-checked','true')
+        page.emulate_media(forced_colors='none')
+        self.record('segmented light/dark/increased contrast/forced colors preserve authored dimensions and equal segments; explicit RGB survives state and palette changes')
+
     def test_macos26_inspector_enums_same_ole_edit_and_undo(self):
         ide = self.macos26_ide()
         ide.get_by_label('Selected object', exact=True).select_option('macos26-Search')
@@ -294,7 +500,7 @@ class MacOS26CompatibilityChecks:
         ide = self.macos26_ide(xaml=True)
         self.macos26_import(ide)
         types = ide.evaluate('Object.fromEntries(vb6Studio.activeModule.form.controls.map(c=>[c.name,c.type]))')
-        for name, kind in {'Layout':'PictureBox','Content':'PictureBox','Navigation':'TreeView','Search':'TextBox','Secret':'TextBox','Notifications':'CheckBox','Choices':'ComboBox','Counter':'UpDown','Meeting':'DTPicker','Progress':'ProgressBar','Pages':'SSTab','Save':'CommandButton'}.items():
+        for name, kind in {'Layout':'PictureBox','Content':'PictureBox','Navigation':'TreeView','Search':'TextBox','Secret':'TextBox','Notifications':'CheckBox','Choices':'ComboBox','Counter':'UpDown','Meeting':'DTPicker','Progress':'ProgressBar','Sections':'Toolbar','Pages':'SSTab','Save':'CommandButton'}.items():
             self.assertEqual(types[name],kind,name)
         self.assertNotIn('MenuItem',types.values())
         self.assertNotIn('TabItem',types.values())
@@ -340,6 +546,10 @@ class MacOS26CompatibilityChecks:
         stepper = frame.locator('[data-control="Counter"][role="spinbutton"]')
         stepper.press('ArrowUp')
         expect(stepper).to_have_attribute('aria-valuenow','4')
+        sections = frame.get_by_role('radiogroup',name='Settings section',exact=True)
+        expect(sections.get_by_role('radio',name='General',exact=True)).to_be_checked()
+        sections.get_by_role('radio',name='Advanced',exact=True).click()
+        expect(frame.locator('[data-control="ActionStatus"]')).to_have_text('section:advanced:1')
         pages = frame.locator('[data-control="Pages"]')
         pages.get_by_role('tab', name='Advanced', exact=True).click()
         expect(frame.locator('[data-control="AdvancedPage"]')).to_be_visible()

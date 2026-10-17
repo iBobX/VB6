@@ -80,6 +80,8 @@ export function validateMacOS26Property(key, value, type, properties = {}) {
     throw new TypeError('Switches require the binary CheckBox Value 0 or 1.');
   if (key === 'MacOSControlStyle' && value === 'segmented' && type === 'Toolbar')
     validateMacOS26ToolbarButtons(properties.Buttons);
+  if (key === 'MacOSControlStyle' && value === 'segmented' && ['TabStrip','SSTab'].includes(type) && ![0,1].includes(Number(properties.TabOrientation ?? 0)))
+    throw new TypeError('Segmented tabs require top or bottom TabOrientation (0 or 1).');
   if (key === 'PlaceholderText' && !['TextBox','ComboBox'].includes(type))
     throw new TypeError('PlaceholderText requires a TextBox or ComboBox.');
   const limit = key === 'MacOSAccessibilityIdentifier' ? 1024 : 16384;
