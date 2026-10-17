@@ -17,7 +17,12 @@ const root=path.resolve(import.meta.dirname,'..'),hash=bytes=>createHash('sha256
 async function instancePair(command,args,settings) {
   const children=[];
   async function start() {
-    const child=spawn(command,args,{cwd:settings.cwd,env:{...process.env,...settings.env},stdio:['ignore','pipe','pipe'],detached:true});children.push(child);
+    const environment={...process.env,...settings.env};
+    if(settings.appImageTemporaryDirectory){
+      environment.TMPDIR=path.join(settings.appImageTemporaryDirectory,'instance-'+children.length);
+      await fs.mkdir(environment.TMPDIR,{mode:0o700});
+    }
+    const child=spawn(command,args,{cwd:settings.cwd,env:environment,stdio:['ignore','pipe','pipe'],detached:true});children.push(child);
     let stderr='';child.stderr.on('data',value=>{stderr=(stderr+value.toString()).slice(-16384);});
     const lines=createInterface({input:child.stdout});let timer;
     return new Promise((resolve,reject)=>{
@@ -48,8 +53,13 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
   // Production wrappers retain the user's GTK/rendering/accessibility settings.
   const fixtureEnvironment=toolkit==='gtk4'?{GDK_DEBUG:'gl-disable:vulkan-disable',GSK_RENDERER:'cairo',GTK_A11Y:'test'}:{};
   const environment={LC_ALL:'C',...fixtureEnvironment,...(flatpakUserDirectory?{FLATPAK_USER_DIR:path.resolve(flatpakUserDirectory)}:{})};
+  // The upstream extract-and-run mode caches extracted images. Keep only our
+  // AppImage children inside a private temporary root so final fixture cleanup
+  // also removes those caches; do not leak a host-only TMPDIR into Flatpak.
+  const runtimeTemporary=path.join(work,'runtime-temporary'),appImageEnvironment={...environment,TMPDIR:runtimeTemporary};
   const flatpakRun=appId=>['--user','run','--cwd=/var/data',...Object.entries(fixtureEnvironment).map(([key,value])=>'--env='+key+'='+value),appId];
   const run=(command,args,options={})=>runPackagingTool(command,args,{cwd:work,env:environment,timeout:120000,...options});
+  const runAppImage=file=>run(file,['--appimage-extract-and-run'],{env:appImageEnvironment});
   const packageOptions={packageName:'vb6-native-'+toolkit+'-'+architecture,version:'2.3.4',license:'MIT',maintainer:'Native packaging qualification'};
   const identity=name=>'org.vb6studio.'+name+'_'+toolkit+'_'+architecture+'_'+hash(work).slice(0,10);
   const toolchain=format=>format==='appimage'?{...(sysroot?{sysroot}:{})}:{flatpakIconSandbox};
@@ -60,7 +70,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
     return run('flatpak',flatpakRun(appId));
   };
   try {
-    await fs.mkdir(reportDirectory,{recursive:true});
+    await fs.mkdir(reportDirectory,{recursive:true});await fs.mkdir(runtimeTemporary,{mode:0o700});
     const application=await exportLinuxApplication(nativeDistributionProject,{architecture,toolkit},{resources:{'Resources/data.txt':'NATIVE_PACKAGE_RESOURCE_OK\n'}});
     for(const format of formats){
       const appId=identity('NativeQualification');
@@ -80,7 +90,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
           Buffer.from(relocation.original,'hex').copy(modified,relocation.offset);assert.equal(hash(modified),relocation.originalSha256);
         }
         await run('desktop-file-validate',[path.join(directory,packageOptions.packageName+'.desktop')]);
-        if(execute)assert.match((await run(file,['--appimage-extract-and-run'])).stdout,/LINUX_NATIVE_DISTRIBUTION_OK/);
+        if(execute)assert.match((await runAppImage(file)).stdout,/LINUX_NATIVE_DISTRIBUTION_OK/);
         const damaged=Buffer.from(result.bytes);damaged[result.report.nativePackaging.squashfsOffset]^=1;
         const bad=path.join(work,'damaged.AppImage');await fs.writeFile(bad,damaged);
         await assert.rejects(run('unsquashfs',['-stat','-offset',String(result.report.nativePackaging.squashfsOffset),bad]));
@@ -115,7 +125,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
       for(const format of formats){
         const appId=identity('GtkQualification');
         const result=await packageLinuxApplicationNative(gui,{...packageOptions,packageName:packageOptions.packageName+'-gtk',format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
-        const execution=format==='appimage'?await run(file,['--appimage-extract-and-run']):await install(file,appId);
+        const execution=format==='appimage'?await runAppImage(file):await install(file,appId);
         assert.match(execution.stdout,/LINUX_GTK_CONTROLS_OK/);assert.match(execution.stdout,/LINUX_GTK_GRAPHICS_OK/);assert.match(execution.stdout,/LINUX_GTK_PACKAGED_IMAGES_OK/);
         checks.push({format,nativeGtkControls:true,packagedPngAndIco:true,toolkit});console.log('PASS '+architecture+' '+toolkit+' '+format+': native controls, clipboard, graphics, image loaders, file I/O and timers');
       }
@@ -130,8 +140,8 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
           // No host files or production launcher settings are modified.
           execution=await run('unshare',['--user','--map-root-user','--mount','--fork','/bin/sh','-ec',
             'mount --bind "$1" /usr/share/xml/iso-codes; test ! -e /usr/share/xml/iso-codes/iso_639.xml; test ! -e /usr/share/xml/iso-codes/iso_639_3.xml; exec "$2" --appimage-extract-and-run',
-            'vb6-native-iso-fixture',empty,file]);
-        }else execution=format==='appimage'?await run(file,['--appimage-extract-and-run']):await install(file,appId);
+            'vb6-native-iso-fixture',empty,file],{env:appImageEnvironment});
+        }else execution=format==='appimage'?await runAppImage(file):await install(file,appId);
         assert.match(execution.stdout,/LINUX_GTK_FONT_CHOOSER_OK/);
         assert.doesNotMatch(execution.stderr,/(?:Failed to load|failed to load|Failed to open|failed to open).*iso_639|GLib-(?:GObject-)?(?:CRITICAL|ERROR)|Gtk-(?:CRITICAL|ERROR)/);
         checks.push({format,nativeFontChooser:true,hostIsoDataMasked:format==='appimage'&&toolkit==='gtk4'});
@@ -143,9 +153,9 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
       for(const format of formats){
         const appId=identity('InstanceQualification');
         const result=await packageLinuxApplicationNative(app,{...packageOptions,packageName:packageOptions.packageName+'-instance',format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
-        if(format==='appimage')await instancePair(file,['--appimage-extract-and-run'],{cwd:work,env:environment});
+        if(format==='appimage')await instancePair(file,['--appimage-extract-and-run'],{cwd:work,env:appImageEnvironment,appImageTemporaryDirectory:runtimeTemporary});
         else {installedApps.push(appId);await run('flatpak',['--user','install','--noninteractive','--assumeyes','--no-deps',file]);await instancePair('flatpak',flatpakRun(appId),{cwd:work,env:environment});}
-        checks.push({format,previousInstanceAcrossIndependentLaunches:true});console.log('PASS '+architecture+' '+toolkit+' '+format+': stable packaged App.PrevInstance identity');
+        checks.push({format,previousInstanceAcrossIndependentLaunches:true,isolatedExtractionDirectories:format==='appimage'});console.log('PASS '+architecture+' '+toolkit+' '+format+': stable packaged App.PrevInstance identity');
       }
     }
     // Exercise maximum accepted IDs with real filesystem/OSTree readers.

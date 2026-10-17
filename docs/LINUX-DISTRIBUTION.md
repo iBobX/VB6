@@ -156,7 +156,7 @@ The exporter uses argument arrays and does not create shell commands from projec
 
 ## Native qualification
 
-`tools/test-linux-native-distribution.mjs` uses independent SquashFS and OSTree readers, verifies the original ELF/resources/modes, rejects damaged containers, and tests actual AppImage and sandboxed Flatpak execution. Native controls, clipboard, Cairo graphics, PNG/ICO loaders, file I/O, timers, modal FontChooser, and cross-launch `App.PrevInstance` are exercised by fully compiled VB fixtures. An isolated fixture signing key verifies the real signed-bundle path. Maximum-length accepted Flatpak identities are tested through the real exporter.
+`tools/test-linux-native-distribution.mjs` uses independent SquashFS and OSTree readers, verifies the original ELF/resources/modes, rejects damaged containers, and tests actual AppImage and sandboxed Flatpak execution. Native controls, clipboard, Cairo graphics, PNG/ICO loaders, file I/O, timers, modal FontChooser, and cross-launch `App.PrevInstance` are exercised by fully compiled VB fixtures. AppImage instance launches use separate temporary extraction roots; fixture-owned extraction caches are removed after their processes stop. An isolated fixture signing key verifies the real signed-bundle path. Maximum-length accepted Flatpak identities are tested through the real exporter.
 
 Install GNOME Platform 50 into an isolated `FLATPAK_USER_DIR`, then run on matching native hardware:
 
