@@ -85,6 +85,10 @@ class WorkflowAuditTests(unittest.TestCase):
         self.reject(lambda w:[s.update({'run':s['run']+' --execute off'}) for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
     def test_linux_flatpak_declared_runtime_required(self):
         self.reject(lambda w:[s.update({'run':s['run'].replace('org.gnome.Platform//50','org.gnome.Platform//49')}) for s in w['jobs']['linux-native-distribution']['steps'] if 'org.gnome.Platform//50' in s.get('run','')])
+    def test_linux_flatpak_session_daemon_must_inherit_installation(self):
+        self.reject(lambda w:[s.pop('env') for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
+    def test_linux_flatpak_portal_cannot_use_another_installation(self):
+        self.reject(lambda w:[s['env'].update({'FLATPAK_USER_DIR':'${{ runner.temp }}/other-flatpak'}) for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
     def test_linux_arm64_execution_cannot_be_removed(self):
         self.reject(lambda w:w['jobs']['linux']['strategy']['matrix']['architecture'].remove('arm64'))
     def test_linux_browser_arm64_execution_cannot_be_removed(self):

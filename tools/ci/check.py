@@ -133,6 +133,12 @@ def audit(root=ROOT):
     distribution_command = 'dbus-run-session -- xvfb-run -a node tools/test-linux-native-distribution.mjs --architecture "$ARCHITECTURE" --toolkit "$TOOLKIT" --flatpak-user-dir "$RUNNER_TEMP/vb6-flatpak" --report reports/linux-native-distribution'
     if not any(step.get('run') == distribution_command and 'if' not in step for step in distribution['steps']):
         raise ValueError('Native AppImage and sandboxed Flatpak execution, GTK, instances and signing must be mandatory')
+    # The session daemon launches Flatpak's portal on demand. Its inherited
+    # installation must match the CLI's, including nested glycin image loaders.
+    if not any(step.get('run') == distribution_command and
+               step.get('env', {}).get('FLATPAK_USER_DIR') == '${{ runner.temp }}/vb6-flatpak'
+               for step in distribution['steps']):
+        raise ValueError('The Flatpak session daemon and nested sandbox portal must share the isolated installation')
     if not any('flatpak --user install --noninteractive --assumeyes --no-related flathub org.gnome.Platform//50' in step.get('run', '').splitlines()
                and step.get('env', {}).get('FLATPAK_USER_DIR') == '${{ runner.temp }}/vb6-flatpak' and 'if' not in step for step in distribution['steps']):
         raise ValueError('Native Flatpak qualification must install the declared runtime')
