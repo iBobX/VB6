@@ -10,6 +10,9 @@ ROOT=Path(__file__).resolve().parents[1]
 ENGINE=os.environ.get('VB6_BROWSER','chromium')
 TRANSPORT=os.environ.get('VB6_TEST_TRANSPORT','http')
 REPORT=ROOT/'reports'/'figma-workspace'/ENGINE/TRANSPORT
+# Native AOT payloads make initial IDE parsing separate from the 8000 ms
+# interaction deadline; readiness still requires the installed workspace API.
+IDE_STARTUP_TIMEOUT_MS=60000
 FIXTURE=r'''enabled=>{const A=VB6StudioAPI,p=A.newProject('FigmaFixture'),m=p.modules[0];p.settings.anchoring=enabled;p.settings.renderer='canvas2d';p.settings.snapToGrid=false;p.settings.showGrid=false;
 Object.assign(m.form.properties,{ClientWidth:9000,ClientHeight:6000,Width:9120,Height:6450});m.code='Option Explicit\nPrivate Sub Command1_Click()\n    Command1.Caption = "Clicked"\nEnd Sub\n';
 const frame=A.createControl('Frame','Frame1',450,450);frame.id='frame';Object.assign(frame.properties,{Caption:'Content',Width:6600,Height:3300});
@@ -39,8 +42,10 @@ class FigmaWorkspace(unittest.TestCase):
         self.load();self.page.evaluate(FIXTURE,False)
     def load(self):
         if TRANSPORT=='memory':self.page.set_content((ROOT/'dist/VB6-Studio-Web.html').read_text())
-        else:self.page.goto((ROOT/'dist/VB6-Studio-Web.html').as_uri() if TRANSPORT=='file' else self.base+'/dist/index.html')
-        self.page.wait_for_function('globalThis.vb6Studio?.figmaMode')
+        # WebKit can leave a standalone document's load event pending after
+        # the IDE is usable. Keep the real origin and await its actual API.
+        else:self.page.goto((ROOT/'dist/VB6-Studio-Web.html').as_uri() if TRANSPORT=='file' else self.base+'/dist/index.html',wait_until='commit')
+        self.page.wait_for_function('globalThis.vb6Studio?.figmaMode',polling=100,timeout=IDE_STARTUP_TIMEOUT_MS)
     def tearDown(self):
         if not self.passed or self.errors:
             try:self.page.screenshot(path=str(REPORT/(self._testMethodName+'-failure.png')),timeout=3000)
