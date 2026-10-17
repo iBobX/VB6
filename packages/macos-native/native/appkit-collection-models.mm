@@ -163,7 +163,18 @@ void reconcileNativeTabs(MacControl&c) {
 
 void layoutNativeTabPages(MacControl&c) {
   auto tabs=(NSTabView*)c.widget;const NSRect content=tabs.contentRect;
-  for(NSTabViewItem*item in tabs.tabViewItems)if(!NSEqualRects(item.view.frame,content))item.view.frame=content;
+  NSPoint origin=NSZeroPoint;
+  if(c.spec.type=="SSTab") {
+    // SSTab child coordinates use the full control's top-left origin. Convert
+    // the page frame, never its already-translated bounds, into that space.
+    NSView*layout=c.appearanceContent?:c.view;const NSRect area=[layout convertRect:content fromView:tabs];
+    origin=NSMakePoint(NSMinX(area)-NSMinX(layout.bounds),layout.isFlipped?NSMinY(area)-NSMinY(layout.bounds):NSMaxY(layout.bounds)-NSMaxY(area));
+  }
+  const NSRect bounds=NSMakeRect(origin.x,origin.y,content.size.width,content.size.height);
+  for(NSTabViewItem*item in tabs.tabViewItems) {
+    if(!NSEqualRects(item.view.frame,content))item.view.frame=content;
+    if(!NSEqualRects(item.view.bounds,bounds))item.view.bounds=bounds;
+  }
 }
 
 bool nativeTabShouldSelect(MacControl&c,NSTabViewItem*item) {
@@ -181,7 +192,7 @@ bool nativeTabShouldSelect(MacControl&c,NSTabViewItem*item) {
 void nativeTabDidSelect(MacControl&c,NSTabViewItem*item) {
   if(c.disposed)return;
   auto tabs=(NSTabView*)c.widget;const auto previous=c.number("tab",0);const auto index=item?[tabs indexOfTabViewItem:item]:-1;
-  c.properties["tab"]=Value::integer(index,Type::Integer);refreshNativeSegments(c);
+  c.properties["tab"]=Value::integer(index,Type::Integer);refreshNativeSegments(c);layoutNativeTabPages(c);
   if(previous!=index)c.event("click",c.spec.type=="SSTab"?Args{Arg(Value::integer(int64_t(previous),Type::Integer))}:Args{});
 }
 void selectNativeTab(MacControl&c,int64_t index) {

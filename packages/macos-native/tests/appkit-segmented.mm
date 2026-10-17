@@ -94,11 +94,31 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
 
   // A canonical TabPage belongs to its persistent item even when initially
   // inactive. Removing the page cannot silently orphan the child control.
-  ControlSpec childSpec{"AppearancePageChild","TextBox",pages->spec.name,{{"tabpage",Value::integer(1)},{"text",Value::string(u"Page two")}}};
-  auto child=host.createControl(form,childSpec);assert(child->view.superview==nativeTabContainer(*pages,1));
-  pages->set(rt,"tab",Value::integer(1));assert(child->view.window==window);
+  pages->set(rt,"width",Value::integer(6000));pages->set(rt,"height",Value::integer(2400));
+  ControlSpec viewSpec{"AppearancePageView","PictureBox",pages->spec.name,{{"tabpage",Value::integer(1)},{"left",Value::integer(0)},{"top",Value::integer(0)},{"width",Value::integer(6000)},{"height",Value::integer(2400)}}};
+  auto pageView=host.createControl(form,viewSpec);form->module->controls.push_back(viewSpec);form->controls["appearancepageview"]=pageView;
+  assert(pageView->view.superview==nativeTabContainer(*pages,1));
+  ControlSpec childSpec{"AppearancePageChild","TextBox",viewSpec.name,{{"left",Value::integer(450)},{"top",Value::integer(900)},{"width",Value::integer(1200)},{"height",Value::integer(360)},{"text",Value::string(u"Page two")}}};
+  auto child=host.createControl(form,childSpec);form->module->controls.push_back(childSpec);form->controls["appearancepagechild"]=child;
+  pages->set(rt,"tab",Value::integer(1));assert(child->view.window==window);const auto childHandle=child->handle;auto retainedPage=[(NSTabView*)pages->widget tabViewItemAtIndex:1];
+  child->set(rt,"selstart",Value::integer(1));child->set(rt,"sellength",Value::integer(3));child->invoke(rt,"setfocus",{});
+  auto assertPageCoordinates=[&] {
+    NSView*layout=pages->appearanceContent?:pages->view;const NSRect rect=[layout convertRect:child->view.bounds fromView:child->view];
+    const double x=NSMinX(rect)-NSMinX(layout.bounds),y=layout.isFlipped?NSMinY(rect)-NSMinY(layout.bounds):NSMaxY(layout.bounds)-NSMaxY(rect);
+    assert(std::abs(x-30)<.001&&std::abs(y-60)<.001&&std::abs(rect.size.width-80)<.001&&std::abs(rect.size.height-24)<.001);
+    assert(pageView->get(rt,"left").integral()==0&&pageView->get(rt,"top").integral()==0&&child->get(rt,"left").integral()==450&&child->get(rt,"top").integral()==900);
+    assert(child->handle==childHandle&&[(NSTabView*)pages->widget tabViewItemAtIndex:1]==retainedPage&&child->view.superview==pageView->widget);
+    assert(window.firstResponder==((NSTextField*)child->widget).currentEditor&&child->get(rt,"text").string()==u"Page two"&&child->get(rt,"selstart").integral()==1&&child->get(rt,"sellength").integral()==3);
+  };
+  for(const Text&style:{u"automatic",u"segmented"}) {
+    setting(rt,pages,"macoscontrolstyle",style);
+    for(int orientation:{0,1}){pages->set(rt,"taborientation",Value::integer(orientation));assertPageCoordinates();}
+    if(style==u"segmented"){setting(rt,pages,"macosmaterial",u"sidebar");assertPageCoordinates();setting(rt,pages,"macosmaterial",u"none");assertPageCoordinates();}
+  }
+  setting(rt,pages,"macoscontrolstyle",u"automatic");assertPageCoordinates();
   pages->invoke(rt,"let:tabcaption",{Arg(Value::integer(1)),Arg(Value::string(u"Second page"))});assert(pages->invoke(rt,"tabcaption",{Arg(Value::integer(1))}).string()==u"Second page");
-  rejected([&]{pages->set(rt,"tabs",Value::integer(1));},380);assert(pages->get(rt,"tabs").integral()==3);child->dispose();
+  rejected([&]{pages->set(rt,"tabs",Value::integer(1));},380);assert(pages->get(rt,"tabs").integral()==3);[window makeFirstResponder:nil];child->dispose();pageView->dispose();
+  form->controls.erase("appearancepagechild");form->controls.erase("appearancepageview");form->module->controls.pop_back();form->module->controls.pop_back();
   pages->set(rt,"tabs",Value::integer(2));assert(pages->get(rt,"tabs").integral()==2);
 
   // Multiline editors use NSTextDelegate, not the NSTextField delegate path.

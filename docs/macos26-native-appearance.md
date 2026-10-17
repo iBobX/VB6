@@ -73,15 +73,21 @@ and the returned normalized project unchanged. The shared tab model resolves
 explicit `TabPage`, saved tab ownership and classic SSTab inactive-page offsets
 before native layout. An initially inactive child belongs to its own persistent
 page, and an authored selection is applied after the pages have been created.
+SSTab children retain their `Left` and `Top` relative to the full control origin,
+matching the designer and browser. Native page bounds translate that origin
+without resizing the authored controls or adding another header offset. This
+also applies through top/bottom presentation and material changes.
 
 Caption, tooltip, enablement, visibility and collection changes reconcile
 existing tab items. Updating a caption or inserting an item before the selected
 page does not rebuild that page or detach its field editor. Removing a page with
 owned child controls is rejected until those children have been moved or removed.
 Actual page transitions respect the current editor's Validate result and marked
-text. The separate NSTextField and NSTextView delegate paths both dispatch
-Validate and LostFocus; a cancelled multiline transition also restores the
-selection that AppKit would otherwise expand. Because a VB focus handler can remove a destination page or unload the
+text. They validate an unchanged field once and suppress a duplicate AppKit
+validation callback during the same handoff. The separate NSTextField and
+NSTextView delegate paths both dispatch Validate and LostFocus; a cancelled
+multiline transition also restores the selection that AppKit would otherwise
+expand. Because a VB focus handler can remove a destination page or unload the
 form, the runtime rechecks the destination after the focus handoff before asking
 AppKit to select it. Structural collection updates do not synthesize Click or
 Change; an actual selection change emits the control's usual Click event.
@@ -140,9 +146,19 @@ selection, reentrant validation, tab-page ownership, material/style transitions,
 native collection decoding and atomic rejection. It emits `APPKIT_SEGMENTED_OK`
 before the enclosing appearance fixture reports success.
 
+`tools/macos26-native-sample.mjs` extends the editable preferences example with
+executable VB assertions while retaining its authored XAML. Native source export
+and all four direct AOT optimization levels load the form, exercise its real
+collections and page editors, and unload it before reporting
+`NATIVE_MACOS26_SAMPLE_OK`. The checks cover initial tracking and selection,
+programmatic single and multiple selection, search and switch state, and retained
+multiline text, selection and control handles across page changes.
+
 Native source changes invalidate the existing offline runtime fingerprint. The
 macOS refresh must compile, execute and sign-check the changed runtime before its
-generated payload can be embedded. The existing provenance, resource, lifetime,
+generated payload can be embedded. Publication additionally requires successful
+appearance, segmented-control and compiled-sample execution evidence in the
+native report. The existing provenance, resource, lifetime,
 signature and execution gates remain required. Running the JavaScript tests on
 another platform does not certify AppKit execution or native visual parity.
 
