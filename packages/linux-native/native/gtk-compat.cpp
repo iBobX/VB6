@@ -6,9 +6,13 @@
 #include <gdk/x11/gdkx.h>
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#else
+#include <gdk/gdkx.h>
 #endif
 
 namespace vb6 {
+bool gtkNativeX11Display(GtkWidget* widget) { return GDK_IS_X11_DISPLAY(gtk_widget_get_display(widget)); }
+void gtkNativeRequireX11(GtkWidget* widget,const char* operation) { if(!gtkNativeX11Display(widget))fail(453,std::string(operation)+" requires X11; this display backend controls global window geometry, stacking and application icons"); }
 void gtkRichDraw(GtkControl&,cairo_t*);
 bool gtkNativeToggle(GtkWidget* widget) {
 #if GTK_MAJOR_VERSION >= 4
@@ -67,7 +71,33 @@ void native_fixed_snapshot(GtkWidget* widget,GtkSnapshot* snapshot) {
   }
   GTK_WIDGET_CLASS(native_fixed_parent_class)->snapshot(widget,snapshot);
 }
-void native_fixed_class_init(NativeFixedClass* klass) { GTK_WIDGET_CLASS(klass)->snapshot=native_fixed_snapshot; }
+gboolean native_fixed_focus_impl(GtkWidget* widget,GtkDirectionType direction) {
+  if(direction!=GTK_DIR_TAB_FORWARD&&direction!=GTK_DIR_TAB_BACKWARD)return GTK_WIDGET_CLASS(native_fixed_parent_class)->focus(widget,direction);
+  std::vector<GtkWidget*> children;for(auto* child=gtk_widget_get_first_child(widget);child;child=gtk_widget_get_next_sibling(child))children.push_back(child);
+  std::stable_sort(children.begin(),children.end(),[](GtkWidget* a,GtkWidget* b){
+    auto* left=static_cast<std::weak_ptr<GtkControl>*>(g_object_get_data(G_OBJECT(a),"vb6-control"));auto* right=static_cast<std::weak_ptr<GtkControl>*>(g_object_get_data(G_OBJECT(b),"vb6-control"));auto x=left?left->lock():nullptr,y=right?right->lock():nullptr;
+    return (x?x->number("tabindex"):0)<(y?y->number("tabindex"):0);
+  });
+  if(direction==GTK_DIR_TAB_BACKWARD)std::reverse(children.begin(),children.end());
+  auto* root=gtk_widget_get_root(widget);auto* focused=root?gtk_root_get_focus(root):nullptr;bool following=!focused||!gtk_widget_is_ancestor(focused,widget);
+  for(auto* child:children){
+    const bool current=focused&&(focused==child||gtk_widget_is_ancestor(focused,child));
+    if(!following){if(current){following=true;if(gtk_widget_child_focus(child,direction))return TRUE;}continue;}
+    if(!gtk_widget_get_visible(child)||!gtk_widget_is_sensitive(child))continue;
+    auto* weak=static_cast<std::weak_ptr<GtkControl>*>(g_object_get_data(G_OBJECT(child),"vb6-control"));auto control=weak?weak->lock():nullptr;
+    if(control&&!control->flag("tabstop",true)&&!control->content)continue;
+    if(gtk_widget_child_focus(child,direction))return TRUE;
+  }
+  return FALSE;
+}
+gboolean native_fixed_focus(GtkWidget* widget,GtkDirectionType direction) noexcept {
+  for(auto* current=widget;current;current=gtk_widget_get_parent(current)){
+    auto* weak=static_cast<std::weak_ptr<GtkControl>*>(g_object_get_data(G_OBJECT(current),"vb6-control"));
+    if(weak)if(auto control=weak->lock()){gboolean result=FALSE;control->host->event([&]{result=native_fixed_focus_impl(widget,direction);});return result;}
+  }
+  return FALSE;
+}
+void native_fixed_class_init(NativeFixedClass* klass) { GTK_WIDGET_CLASS(klass)->snapshot=native_fixed_snapshot;GTK_WIDGET_CLASS(klass)->focus=native_fixed_focus; }
 void native_fixed_init(NativeFixed*) {}
 struct NativeTextView { GtkTextView parent; };
 struct NativeTextViewClass { GtkTextViewClass parent; };
@@ -97,11 +127,32 @@ std::string cssString(const char* input) {
   }return output+'"';
 }
 struct Geometry { int x=0,y=0;bool positioned=false,dialog=false;GdkPixbuf* icon=nullptr;~Geometry(){if(icon)g_object_unref(icon);} };
-void applyGeometry(GtkWidget* widget) {
+void moveX11Window(GdkSurface* surface,int x,int y) {
+  auto* gdkDisplay=gdk_surface_get_display(surface);auto* display=gdk_x11_display_get_xdisplay(gdkDisplay);auto window=gdk_x11_surface_get_xid(surface);
+  // The window manager owns a reparented frame. Send root coordinates through
+  // EWMH when available, retaining ordinary ConfigureRequest for older WMs.
+  if(gdk_x11_screen_supports_net_wm_hint(gdk_x11_display_get_screen(gdkDisplay),"_NET_MOVERESIZE_WINDOW")){
+    XEvent event{};event.xclient.type=ClientMessage;event.xclient.display=display;event.xclient.window=window;event.xclient.message_type=XInternAtom(display,"_NET_MOVERESIZE_WINDOW",False);event.xclient.format=32;
+    event.xclient.data.l[0]=NorthWestGravity|(1<<8)|(1<<9)|(1<<12);event.xclient.data.l[1]=x;event.xclient.data.l[2]=y;
+    XSendEvent(display,DefaultRootWindow(display),False,SubstructureRedirectMask|SubstructureNotifyMask,&event);
+  }else XMoveWindow(display,window,x,y);
+}
+void x11WindowPosition(GdkSurface* surface,int* x,int* y) {
+  auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));auto window=gdk_x11_surface_get_xid(surface);Window child=None;
+  XTranslateCoordinates(display,window,DefaultRootWindow(display),0,0,x,y,&child);
+  Atom actual=None;int format=0;unsigned long count=0,remaining=0;unsigned char* bytes=nullptr;
+  if(XGetWindowProperty(display,window,XInternAtom(display,"_NET_FRAME_EXTENTS",False),0,4,False,XA_CARDINAL,&actual,&format,&count,&remaining,&bytes)==Success&&actual==XA_CARDINAL&&format==32&&count==4){
+    auto* extents=reinterpret_cast<unsigned long*>(bytes);if(extents[0]<=65535&&extents[2]<=65535){*x-=int(extents[0]);*y-=int(extents[2]);}XFree(bytes);return;
+  }
+  if(bytes)XFree(bytes);
+  Window frame=window;for(unsigned depth=0;depth<128;++depth){Window root=None,parent=None,*children=nullptr;unsigned count=0;const auto ok=XQueryTree(display,frame,&root,&parent,&children,&count);if(children)XFree(children);if(!ok||parent==None||parent==root)break;frame=parent;}
+  if(frame!=window)XTranslateCoordinates(display,frame,DefaultRootWindow(display),0,0,x,y,&child);
+}
+void applyGeometry(GtkWidget* widget,bool move=false) {
   auto* state=static_cast<Geometry*>(g_object_get_data(G_OBJECT(widget),"vb6-window-geometry"));if(!state)return;
   auto* surface=gtk_widget_get_window(widget);if(!surface||!GDK_IS_X11_SURFACE(surface))return;
   auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));auto window=gdk_x11_surface_get_xid(surface);
-  if(state->positioned)XMoveWindow(display,window,state->x,state->y);
+  if(move&&state->positioned)moveX11Window(surface,state->x,state->y);
   if(state->dialog){auto atom=XInternAtom(display,"_NET_WM_WINDOW_TYPE_DIALOG",False);XChangeProperty(display,window,XInternAtom(display,"_NET_WM_WINDOW_TYPE",False),XA_ATOM,32,PropModeReplace,reinterpret_cast<unsigned char*>(&atom),1);}
   if(state->icon){
     auto width=gdk_pixbuf_get_width(state->icon),height=gdk_pixbuf_get_height(state->icon),channels=gdk_pixbuf_get_n_channels(state->icon),stride=gdk_pixbuf_get_rowstride(state->icon);auto* pixels=gdk_pixbuf_get_pixels(state->icon);
@@ -114,7 +165,7 @@ void applyGeometry(GtkWidget* widget) {
 }
 Geometry& geometry(GtkWindow* window) {
   auto* state=static_cast<Geometry*>(g_object_get_data(G_OBJECT(window),"vb6-window-geometry"));
-  if(!state){state=new Geometry;g_object_set_data_full(G_OBJECT(window),"vb6-window-geometry",state,+[](gpointer data){delete static_cast<Geometry*>(data);});g_signal_connect(window,"map",G_CALLBACK(+[](GtkWidget* widget,gpointer){applyGeometry(widget);}),nullptr);}
+  if(!state){state=new Geometry;g_object_set_data_full(G_OBJECT(window),"vb6-window-geometry",state,+[](gpointer data){delete static_cast<Geometry*>(data);});g_signal_connect(window,"map",G_CALLBACK(+[](GtkWidget* widget,gpointer){applyGeometry(widget,true);}),nullptr);}
   return *state;
 }
 template<class T> struct ClipboardResult { bool done=false;T* value=nullptr;GError* error=nullptr; };
@@ -195,19 +246,24 @@ void gtk_calendar_select_month(GtkCalendar* calendar,guint month,guint year) { g
 void gtk_calendar_select_day(GtkCalendar* calendar,guint day) { guint y,m,d;gtk_calendar_get_date(calendar,&y,&m,&d);auto* date=g_date_time_new_local(int(y),int(m)+1,int(day),0,0,0);if(!date)fail(380);::gtk_calendar_select_day(calendar,date);g_date_time_unref(date); }
 int gdk_display_get_n_monitors(GdkDisplay* display) { return int(g_list_model_get_n_items(gdk_display_get_monitors(display))); }
 GdkMonitor* gdk_display_get_monitor(GdkDisplay* display,int index) { if(index<0)return nullptr;auto* monitor=GDK_MONITOR(g_list_model_get_item(gdk_display_get_monitors(display),guint(index)));if(monitor)g_object_unref(monitor);return monitor; }
-GdkMonitor* gdk_display_get_primary_monitor(GdkDisplay* display) { return gdk_display_get_monitor(display,0); }
+GdkMonitor* gdk_display_get_primary_monitor(GdkDisplay* display) { if(GDK_IS_X11_DISPLAY(display))if(auto* monitor=gdk_x11_display_get_primary_monitor(display))return monitor;return gdk_display_get_monitor(display,0); }
 GdkSurface* gtk_widget_get_window(GtkWidget* widget) { auto* native=gtk_widget_get_native(widget);return native?gtk_native_get_surface(native):nullptr; }
 void gtk_window_get_position(GtkWindow* window,int* x,int* y) {
-  *x=*y=0;auto* surface=gtk_widget_get_window(GTK_WIDGET(window));if(surface&&GDK_IS_X11_SURFACE(surface)){auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));Window child;XTranslateCoordinates(display,gdk_x11_surface_get_xid(surface),DefaultRootWindow(display),0,0,x,y,&child);}
+  *x=*y=0;auto* surface=gtk_widget_get_window(GTK_WIDGET(window));if(surface&&GDK_IS_X11_SURFACE(surface))x11WindowPosition(surface,x,y);
   else if(!surface){auto& state=geometry(window);*x=state.x;*y=state.y;}
+  else gtkNativeRequireX11(GTK_WIDGET(window),"Global window coordinates");
 }
-void gtk_window_move(GtkWindow* window,int x,int y) { auto& state=geometry(window);state.x=x;state.y=y;state.positioned=true;applyGeometry(GTK_WIDGET(window)); }
+void gtk_window_move(GtkWindow* window,int x,int y) { if(gtk_widget_get_window(GTK_WIDGET(window)))gtkNativeRequireX11(GTK_WIDGET(window),"Global window positioning");auto& state=geometry(window);state.x=x;state.y=y;state.positioned=true;applyGeometry(GTK_WIDGET(window),true); }
 void gtk_window_get_size(GtkWindow* window,int* width,int* height) { *width=gtk_widget_get_width(GTK_WIDGET(window));*height=gtk_widget_get_height(GTK_WIDGET(window));if(*width<=0||*height<=0)gtk_window_get_default_size(window,width,height); }
 void gtk_window_set_position(GtkWindow* window,int) { int width,height;gtk_window_get_size(window,&width,&height);auto* monitor=gdk_display_get_primary_monitor(gtk_widget_get_display(GTK_WIDGET(window)));if(monitor){GdkRectangle rect;gdk_monitor_get_geometry(monitor,&rect);gtk_window_move(window,rect.x+(rect.width-width)/2,rect.y+(rect.height-height)/2);} }
 void gtk_window_set_type_hint(GtkWindow* window,int) { geometry(window).dialog=true;applyGeometry(GTK_WIDGET(window)); }
-void gtk_window_set_icon(GtkWindow* window,GdkPixbuf* icon) { auto& state=geometry(window);if(icon)g_object_ref(icon);if(state.icon)g_object_unref(state.icon);state.icon=icon;applyGeometry(GTK_WIDGET(window)); }
-void gdk_window_raise(GdkSurface* surface) { if(GDK_IS_X11_SURFACE(surface)){auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));XRaiseWindow(display,gdk_x11_surface_get_xid(surface));XFlush(display);} }
-void gdk_window_lower(GdkSurface* surface) { if(GDK_IS_X11_SURFACE(surface)){auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));XLowerWindow(display,gdk_x11_surface_get_xid(surface));XFlush(display);} }
+void gtk_window_set_icon(GtkWindow* window,GdkPixbuf* icon) {
+  gtkNativeRequireX11(GTK_WIDGET(window),"Per-window pixel icons");auto& state=geometry(window);GdkPixbuf* next=nullptr;
+  if(icon){const auto width=gdk_pixbuf_get_width(icon),height=gdk_pixbuf_get_height(icon);const auto factor=std::min(1.0,256.0/std::max(width,height));next=factor<1?gdk_pixbuf_scale_simple(icon,std::max(1,int(width*factor)),std::max(1,int(height*factor)),GDK_INTERP_BILINEAR):GDK_PIXBUF(g_object_ref(icon));}
+  if(state.icon)g_object_unref(state.icon);state.icon=next;applyGeometry(GTK_WIDGET(window));
+}
+void gdk_window_raise(GdkSurface* surface) { if(!GDK_IS_X11_SURFACE(surface))fail(453,"This display backend controls global window stacking; use X11 for Form.ZOrder");auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));XRaiseWindow(display,gdk_x11_surface_get_xid(surface));XFlush(display); }
+void gdk_window_lower(GdkSurface* surface) { if(!GDK_IS_X11_SURFACE(surface))fail(453,"This display backend controls global window stacking; use X11 for Form.ZOrder");auto* display=gdk_x11_display_get_xdisplay(gdk_surface_get_display(surface));XLowerWindow(display,gdk_x11_surface_get_xid(surface));XFlush(display); }
 void gtk_widget_draw(GtkWidget* widget,cairo_t* context) {
   auto* paintable=gtk_widget_paintable_new(widget);auto* snapshot=gtk_snapshot_new();gdk_paintable_snapshot(paintable,GDK_SNAPSHOT(snapshot),gtk_widget_get_width(widget),gtk_widget_get_height(widget));auto* node=gtk_snapshot_free_to_node(snapshot);
   if(node){gsk_render_node_draw(node,context);gsk_render_node_unref(node);}g_object_unref(paintable);
@@ -224,7 +280,7 @@ char* gtk_file_chooser_get_filename(GtkFileChooser* chooser) { auto* file=gtk_fi
 GSList* gtk_file_chooser_get_filenames(GtkFileChooser* chooser) { auto* files=gtk_file_chooser_get_files(chooser);GSList* result=nullptr;for(guint i=0;i<g_list_model_get_n_items(files);++i){auto* file=G_FILE(g_list_model_get_item(files,i));auto* path=g_file_get_path(file);g_object_unref(file);if(path)result=g_slist_append(result,path);}g_object_unref(files);return result; }
 GSList* gtk_file_chooser_list_filters(GtkFileChooser* chooser) { auto* filters=gtk_file_chooser_get_filters(chooser);GSList* result=nullptr;for(guint i=0;i<g_list_model_get_n_items(filters);++i){auto* filter=g_list_model_get_item(filters,i);result=g_slist_append(result,filter);g_object_unref(filter);}g_object_unref(filters);return result; }
 void gtk_clipboard_set_text(GtkClipboard* clipboard,const char* text,int length) { std::string value(text,length<0?std::strlen(text):size_t(length));gdk_clipboard_set_text(clipboard,value.c_str()); }
-void gtk_clipboard_store(GtkClipboard* clipboard) { gdk_clipboard_store_async(clipboard,G_PRIORITY_DEFAULT,nullptr,nullptr,nullptr); }
+void gtk_clipboard_store(GtkClipboard* clipboard) { gdk_clipboard_store_async(clipboard,G_PRIORITY_DEFAULT,nullptr,+[](GObject* object,GAsyncResult* result,gpointer){GError* error=nullptr;gdk_clipboard_store_finish(GDK_CLIPBOARD(object),result,&error);if(error)g_error_free(error);},nullptr); }
 char* gtk_clipboard_wait_for_text(GtkClipboard* clipboard) { ClipboardResult<char> state;gdk_clipboard_read_text_async(clipboard,nullptr,+[](GObject* object,GAsyncResult* result,gpointer data){auto* state=static_cast<ClipboardResult<char>*>(data);state->value=gdk_clipboard_read_text_finish(GDK_CLIPBOARD(object),result,&state->error);state->done=true;},&state);waitClipboard(state);return state.value; }
 gboolean gtk_clipboard_wait_is_text_available(GtkClipboard* clipboard) { auto* formats=gdk_clipboard_get_formats(clipboard);return gdk_content_formats_contain_gtype(formats,G_TYPE_STRING)||gdk_content_formats_contain_mime_type(formats,"text/plain")||gdk_content_formats_contain_mime_type(formats,"text/plain;charset=utf-8"); }
 gboolean gtk_clipboard_wait_is_image_available(GtkClipboard* clipboard) { auto* formats=gdk_clipboard_get_formats(clipboard);if(gdk_content_formats_contain_gtype(formats,GDK_TYPE_TEXTURE)||gdk_content_formats_contain_gtype(formats,GDK_TYPE_PIXBUF))return TRUE;for(auto* mime:{"image/png","image/jpeg","image/bmp","image/tiff"})if(gdk_content_formats_contain_mime_type(formats,mime))return TRUE;return FALSE; }

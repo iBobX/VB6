@@ -13,6 +13,8 @@ void gtkNativeToggleSet(GtkWidget*,bool,bool = false);
 bool gtkNativeRange(GtkWidget*);
 double gtkNativeRangeValue(GtkWidget*);
 void gtkNativeRangeSet(GtkWidget*,double,double,double,double,double);
+bool gtkNativeX11Display(GtkWidget*);
+void gtkNativeRequireX11(GtkWidget*,const char*);
 inline gboolean gtkNativeCanFocus(GtkWidget* widget) {
 #if GTK_MAJOR_VERSION >= 4
   return gtk_widget_get_focusable(widget)||GTK_IS_ENTRY(widget)||GTK_IS_SPIN_BUTTON(widget)||GTK_IS_COMBO_BOX(widget);

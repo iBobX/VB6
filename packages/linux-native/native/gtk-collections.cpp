@@ -133,6 +133,9 @@ void GtkItems::changed() {
       if(page==selected)selectedIndex=int(i);auto* label=gtk_label_new_with_mnemonic(gtkCaption(itemText(*item)).c_str());gtk_notebook_append_page(GTK_NOTEBOOK(c->widget),page,label);gtk_widget_show(page);
     }
     for(auto it=c->tabPages.begin();it!=c->tabPages.end();)if(!live.count(it->first)){gtk_widget_destroy(it->second);g_object_unref(it->second);it=c->tabPages.erase(it);}else ++it;
+#if GTK_MAJOR_VERSION >= 4
+    gtk_notebook_set_show_tabs(GTK_NOTEBOOK(c->widget),!values.empty());
+#endif
     gtk_notebook_set_current_page(GTK_NOTEBOOK(c->widget),selectedIndex);
   }
   if(kind=="buttons"||kind=="panels") {

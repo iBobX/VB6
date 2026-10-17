@@ -2,6 +2,7 @@
 #include "gtk.hpp"
 #include <iostream>
 #include <cstring>
+#include "gtk-basic-dialog-contracts.hpp"
 
 using namespace vb6;
 namespace {
@@ -53,18 +54,22 @@ int main() {
     const std::vector<std::string> types={"CommandButton","CheckBox","OptionButton","Label","TextBox","RichTextBox","Frame","PictureBox","Image","Line","Shape","ComboBox","ListBox","DriveListBox","DirListBox","FileListBox","HScrollBar","VScrollBar","Slider","UpDown","ProgressBar","DTPicker","MonthView","TreeView","ListView","MSFlexGrid","MSHFlexGrid","DataGrid","TabStrip","SSTab","Toolbar","StatusBar","ImageList","CommonDialog","Timer","MSChart"};
     for(size_t i=0;i<types.size();++i)module.controls.push_back(spec(types[i],"C"+types[i],{{"left",Value::integer((i%8)*1800)},{"top",Value::integer((i/8)*1400)},{"interval",Value::integer(0)}}));
     auto child=spec("TextBox","Nested",{{"left",Value::integer(75)},{"top",Value::integer(150)}});child.parent="CFrame";module.controls.insert(module.controls.begin(),child);
+#if GTK_MAJOR_VERSION >= 4
+    auto focusFrame=spec("Frame","FocusFrame",{{"left",Value::integer(9000)},{"top",Value::integer(7500)},{"width",Value::integer(4500)},{"height",Value::integer(1500)}});module.controls.push_back(focusFrame);
+    for(int i=0;i<3;++i){auto focus=spec("TextBox","Focus"+std::to_string(i),{{"left",Value::integer(i*1350)},{"top",Value::integer(300)},{"width",Value::integer(1200)},{"tabindex",Value::integer(i)},{"tabstop",Value::boolean(i!=1)}});focus.parent="FocusFrame";module.controls.push_back(focus);}
+#endif
     auto tabbed=spec("TextBox","TabbedEditor",{{"multiline",Value::boolean(true)}});tabbed.parent="CTabStrip";module.controls.push_back(tabbed);
     auto menu=spec("Menu","FileMenu",{{"caption",Value::string(u"&File")}});module.menus.push_back(menu);
     auto exitMenu=spec("Menu","ExitMenu",{{"caption",Value::string(u"E&xit")}});exitMenu.parent="FileMenu";module.menus.push_back(exitMenu);
     int buttonClicks=0,textChanges=0,checkClicks=0,labelClicks=0,menuClicks=0,keyDown=0,lastKeyPress=0,arrayIndex=-1,queryCount=0,unloadCount=0,modalTicks=0,timerTicks=0,apiTicks=0;
-    bool cancelNext=true,cancelKeys=true,unloadTimer=false;
+    bool cancelNext=true,cancelKeys=true,unloadTimer=false,rewriteKeyPress=false;
     module.procedures["ccommandbutton_click"]=procedure("ccommandbutton_click",[&](Frame&){++buttonClicks;return Value{};});
     module.procedures["ctextbox_change"]=procedure("ctextbox_change",[&](Frame&){++textChanges;return Value{};});
     module.procedures["ccheckbox_click"]=procedure("ccheckbox_click",[&](Frame&){++checkClicks;return Value{};});
     module.procedures["clabel_click"]=procedure("clabel_click",[&](Frame&){++labelClicks;return Value{};});
     module.procedures["exitmenu_click"]=procedure("exitmenu_click",[&](Frame&){++menuClicks;return Value{};});
     module.procedures["form_keydown"]=procedure("form_keydown",[&](Frame& frame){++keyDown;if(cancelKeys)frame.ref("keycode").set(Value::integer(0,Type::Integer));return Value{};},{param("keycode","integer"),param("shift","integer")});
-    module.procedures["form_keypress"]=procedure("form_keypress",[&](Frame& frame){lastKeyPress=int(frame.get("keyascii").integral());return Value{};},{param("keyascii","integer")});
+    module.procedures["form_keypress"]=procedure("form_keypress",[&](Frame& frame){lastKeyPress=int(frame.get("keyascii").integral());if(rewriteKeyPress)frame.ref("keyascii").set(Value::integer(0x3a9,Type::Integer));return Value{};},{param("keyascii","integer")});
     module.procedures["form_queryunload"]=procedure("form_queryunload",[&](Frame& frame){++queryCount;if(cancelNext){cancelNext=false;frame.ref("cancel").set(Value::integer(1,Type::Integer));}return Value{};},{param("cancel","integer"),param("unloadmode","integer")});
     module.procedures["form_unload"]=procedure("form_unload",[&](Frame&){++unloadCount;return Value{};},{param("cancel","integer")});
     module.procedures["ctimer_timer"]=procedure("ctimer_timer",[&](Frame& frame){++timerTicks;control(frame.self,"CTimer")->set(runtime,"enabled",Value::boolean(false));if(unloadTimer)runtime.unload(frame.self);return Value{};});
@@ -80,6 +85,7 @@ int main() {
     runtime.modules[lower(callbacks.name)]=callbacks;
     auto instance=runtime.instance(module.name);runtime.load(instance);host.formCall(instance,"show",{});host.pump();
     auto form=host.form(instance);
+    qualifyGtkBasicDialogs(runtime,host);
     require(GTK_IS_WINDOW(form->window),"VB Form is not a native GtkWindow");
     require(GTK_IS_BUTTON(control(instance,"CCommandButton")->widget),"Button is not native GTK");
     require(GTK_IS_TEXT_VIEW(control(instance,"CRichTextBox")->widget),"RichTextBox is not native GTK");
@@ -96,6 +102,16 @@ int main() {
     gtk_menu_item_activate(GTK_MENU_ITEM(control(instance,"ExitMenu")->menu));
 #endif
     host.check();require(menuClicks==1,"Native menu did not dispatch VB Click");
+#if GTK_MAJOR_VERSION >= 4
+    auto menuControl=control(instance,"ExitMenu");menuControl->set(runtime,"enabled",Value::boolean(false));require(!g_action_get_enabled(G_ACTION(menuControl->menuAction)),"GTK4 menu action ignored Enabled=False");g_action_activate(G_ACTION(menuControl->menuAction),nullptr);host.check();require(menuClicks==1,"A disabled GTK4 menu dispatched Click");menuControl->set(runtime,"enabled",Value::boolean(true));menuControl->set(runtime,"checked",Value::boolean(true));
+    auto* checked=g_action_get_state(G_ACTION(menuControl->menuAction));require(checked&&g_variant_get_boolean(checked),"GTK4 menu action lost checked state");g_variant_unref(checked);menuControl->set(runtime,"checked",Value::boolean(false));
+    auto menuRoot=control(instance,"FileMenu");menuRoot->set(runtime,"visible",Value::boolean(false));require(!gtk_widget_get_visible(form->menuBar),"Hidden root menu remained in the GTK4 menu bar");require(g_menu_model_get_n_items(G_MENU_MODEL(menuRoot->submenuModel))>0,"Hidden root menu lost its native context model");
+    host.formCall(instance,"popupmenu",{Arg(Value::object(menuRoot)),Arg(Value::integer(0)),Arg(Value::integer(450)),Arg(Value::integer(600))});GtkWidget* popup=nullptr;for(auto* child=gtk_widget_get_first_child(form->surface->view);child;child=gtk_widget_get_next_sibling(child))if(GTK_IS_POPOVER_MENU(child))popup=child;require(popup&&gtk_widget_get_visible(popup),"PopupMenu did not open a real GTK4 popover for a hidden root");gtk_popover_popdown(GTK_POPOVER(popup));menuRoot->set(runtime,"visible",Value::boolean(true));host.pump();
+    auto firstFocus=control(instance,"Focus0"),skipFocus=control(instance,"Focus1"),lastFocus=control(instance,"Focus2");auto focusContainer=control(instance,"FocusFrame");
+    gtk_widget_grab_focus(firstFocus->widget);require(gtk_widget_child_focus(focusContainer->content,GTK_DIR_TAB_FORWARD)&&host.controlForWidget(gtk_window_get_focus(GTK_WINDOW(form->window)))==lastFocus,"GTK4 Tab navigation ignored TabIndex or TabStop");
+    require(gtk_widget_child_focus(focusContainer->content,GTK_DIR_TAB_BACKWARD)&&host.controlForWidget(gtk_window_get_focus(GTK_WINDOW(form->window)))==firstFocus,"GTK4 reverse Tab navigation lost container order");skipFocus->invoke(runtime,"setfocus",{});require(host.controlForWidget(gtk_window_get_focus(GTK_WINDOW(form->window)))==skipFocus,"TabStop=False incorrectly prevented explicit SetFocus");
+    firstFocus->invoke(runtime,"zorder",{Arg(Value::integer(0))});require(gtk_widget_get_last_child(focusContainer->content)==firstFocus->view,"GTK4 Control.ZOrder did not raise the actual child");firstFocus->invoke(runtime,"zorder",{Arg(Value::integer(1))});require(gtk_widget_get_first_child(focusContainer->content)==firstFocus->view,"GTK4 Control.ZOrder did not lower the actual child");
+#endif
     auto entry=control(instance,"CTextBox");gtk_entry_set_text(GTK_ENTRY(entry->widget),"A😀ŻZ");host.check();require(textChanges==1,"Native edit did not dispatch VB Change");
     entry->editSelect(1,2);require(entry->get(runtime,"seltext").string()==u"😀","GTK selection lost VB UTF-16 offsets");
     entry->set(runtime,"seltext",Value::string(u"Ω"));require(entry->editText()==u"AΩŻZ","UTF-16 edit replacement is incorrect");
@@ -118,6 +134,9 @@ int main() {
     require(!host.keyEvent(*entry,&unicodeKey,true)&&lastKeyPress==0x4e2d,"Non-Latin key input was swallowed or omitted KeyPress");
     unicodeKey.keyval=gdk_unicode_to_keyval(0x1f600);require(!host.keyEvent(*entry,&unicodeKey,true),"Supplementary Unicode key input was swallowed");
     unicodeKey.keyval=GDK_KEY_AudioRaiseVolume;require(!host.keyEvent(*entry,&unicodeKey,true),"Unmapped native key was swallowed");
+#if GTK_MAJOR_VERSION >= 4
+    entry->editSelect(2,1);rewriteKeyPress=true;handled=FALSE;g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_x,0,GdkModifierType(0),&handled);rewriteKeyPress=false;host.check();require(handled&&entry->editText()==u"AΩΩZ","Changed ByRef KeyAscii was not committed through the GTK4 editor boundary");
+#endif
     auto label=control(instance,"CLabel");
 #if GTK_MAJOR_VERSION >= 4
     auto* click=GTK_GESTURE_CLICK(g_object_get_data(G_OBJECT(label->widget),"vb6-click-controller"));require(click!=nullptr,"GTK4 label has no native click gesture");g_signal_emit_by_name(click,"released",1,1.0,1.0);

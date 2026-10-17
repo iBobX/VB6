@@ -259,7 +259,7 @@ Value GtkHost::formGet(const std::shared_ptr<Instance>& owner,const std::string&
   if(name=="caption") return Value::string(fromUTF8(gtk_window_get_title(GTK_WINDOW(value->window))));
   if(name=="visible") return Value::boolean(gtk_widget_get_visible(value->window));
   if(name=="enabled") return Value::boolean(value->enabled);
-  if(name=="left"||name=="top") { int x,y; gtk_window_get_position(GTK_WINDOW(value->window),&x,&y); return Value::real((name=="left"?x:y)*15,Type::Single); }
+  if(name=="left"||name=="top") { gtkNativeRequireX11(value->window,"Form.Left/Top");int x,y; gtk_window_get_position(GTK_WINDOW(value->window),&x,&y); return Value::real((name=="left"?x:y)*15,Type::Single); }
   if(name=="width"||name=="height") { int w,h; gtk_window_get_size(GTK_WINDOW(value->window),&w,&h); return Value::real((name=="width"?w:h)*15,Type::Single); }
   if(name=="clientwidth"||name=="clientheight") return Value::real((name=="clientwidth"?value->width:value->height)*15,Type::Single);
   if(name=="windowstate") { auto* window=gtk_widget_get_window(value->window); auto state=window?gdk_window_get_state(window):GdkWindowState(0); return Value::integer(state&GDK_WINDOW_STATE_ICONIFIED?1:state&GDK_WINDOW_STATE_MAXIMIZED?2:0,Type::Integer); }
@@ -275,7 +275,7 @@ void GtkHost::formSet(const std::shared_ptr<Instance>& owner,const std::string& 
   if(name=="left"||name=="top"||name=="width"||name=="height"||name=="clientwidth"||name=="clientheight") {
     auto n=input.floating()/15; bool position=name=="left"||name=="top";
     if(!std::isfinite(n)||std::abs(n)>20000||(!position&&n<0))fail(380);
-    int x,y; if(position) { gtk_window_get_position(GTK_WINDOW(value->window),&x,&y); gtk_window_move(GTK_WINDOW(value->window),name=="left"?int(n):x,name=="top"?int(n):y); }
+    int x,y; if(position) { gtkNativeRequireX11(value->window,"Form.Left/Top");gtk_window_get_position(GTK_WINDOW(value->window),&x,&y); gtk_window_move(GTK_WINDOW(value->window),name=="left"?int(n):x,name=="top"?int(n):y); }
     else { gtk_window_get_size(GTK_WINDOW(value->window),&x,&y); gtk_window_resize(GTK_WINDOW(value->window),name=="width"||name=="clientwidth"?std::max(1,int(n)):x,name=="height"||name=="clientheight"?std::max(1,int(n)):y); }
     value->surface->properties[name]=input; return;
   }
@@ -310,16 +310,22 @@ Value GtkHost::formCall(const std::shared_ptr<Instance>& owner,const std::string
     return {};
   }
   if(name=="hide") { gtk_widget_hide(value->window);value->surface->properties["visible"]=Value::boolean(false);if(value->modalLoop)g_main_loop_quit(value->modalLoop);return {}; }
-  if(name=="move") { if(args.size()<2||args.size()>4)fail(450);const char* properties[]={"left","top","width","height"};for(size_t i=0;i<args.size();++i)if(args[i].value.type!=Type::Missing)formSet(owner,properties[i],args[i].value);return {}; }
+  if(name=="move") {
+    if(args.size()<2||args.size()>4)fail(450);const char* properties[]={"left","top","width","height"};int values[4]{};bool present[4]{};
+    for(size_t i=0;i<args.size();++i)if(args[i].value.type!=Type::Missing){const auto number=args[i].value.floating()/15;if(!std::isfinite(number)||std::abs(number)>20000||(i>=2&&number<0))fail(380);present[i]=true;values[i]=int(number);}
+    if(present[0]||present[1]){gtkNativeRequireX11(value->window,"Form.Move");int x,y;gtk_window_get_position(GTK_WINDOW(value->window),&x,&y);gtk_window_move(GTK_WINDOW(value->window),present[0]?values[0]:x,present[1]?values[1]:y);}
+    if(present[2]||present[3]){int width,height;gtk_window_get_size(GTK_WINDOW(value->window),&width,&height);gtk_window_resize(GTK_WINDOW(value->window),present[2]?std::max(1,values[2]):width,present[3]?std::max(1,values[3]):height);}
+    for(size_t i=0;i<args.size();++i)if(present[i])value->surface->properties[properties[i]]=args[i].value;return {};
+  }
   if(name=="setfocus") { gtk_window_present(GTK_WINDOW(value->window));return {}; }
-  if(name=="zorder") { auto n=integerArgument(args,0);if(n<0||n>1)fail(5);auto* window=gtk_widget_get_window(value->window);if(window){if(n)gdk_window_lower(window);else gdk_window_raise(window);}return {}; }
+  if(name=="zorder") { auto n=integerArgument(args,0);if(n<0||n>1)fail(5);gtkNativeRequireX11(value->window,"Form.ZOrder");auto* window=gtk_widget_get_window(value->window);if(window){if(n)gdk_window_lower(window);else gdk_window_raise(window);}return {}; }
   if(name=="popupmenu") {
     auto c=std::dynamic_pointer_cast<GtkControl>(argument(args,0).asObject());if(!c||c->spec.type!="Menu")fail(424);
 #if GTK_MAJOR_VERSION >= 4
     if(!c->submenuModel||!g_menu_model_get_n_items(G_MENU_MODEL(c->submenuModel)))fail(5,"PopupMenu requires child items");
     auto* popup=gtk_popover_menu_new_from_model(G_MENU_MODEL(c->submenuModel));gtk_widget_set_parent(popup,value->surface->view);
     if(args.size()>2){auto point=value->surface->point(argument(args,2).floating(),args.size()>3?argument(args,3).floating():0);GdkRectangle rectangle{int(point.first),int(point.second),1,1};gtk_popover_set_pointing_to(GTK_POPOVER(popup),&rectangle);}
-    g_signal_connect(popup,"closed",G_CALLBACK(+[](GtkPopover* popover,gpointer){gtk_widget_unparent(GTK_WIDGET(popover));}),nullptr);gtk_popover_popup(GTK_POPOVER(popup));
+    g_signal_connect(popup,"closed",G_CALLBACK(+[](GtkPopover* popover,gpointer){if(gtk_widget_get_parent(GTK_WIDGET(popover)))gtk_widget_unparent(GTK_WIDGET(popover));}),nullptr);gtk_popover_popup(GTK_POPOVER(popup));
 #else
     auto* menu=gtk_menu_item_get_submenu(GTK_MENU_ITEM(c->menu));if(!menu)fail(5,"PopupMenu requires child items");gtk_menu_popup_at_pointer(GTK_MENU(menu),nullptr);
 #endif
@@ -335,6 +341,7 @@ void GtkHost::rebuildMenus(const std::shared_ptr<GtkForm>& value) {
   auto controls=gtkFormControls(value->owner);auto* actions=g_simple_action_group_new();
   while(g_list_model_get_n_items(G_LIST_MODEL(value->accelerators))){auto* shortcut=GTK_SHORTCUT(g_list_model_get_item(G_LIST_MODEL(value->accelerators),0));gtk_shortcut_controller_remove_shortcut(value->accelerators,shortcut);g_object_unref(shortcut);}
   for(auto& c:controls)if(c->spec.type=="Menu"){
+    if(!c->spec.parent.empty()){auto found=value->owner->controls.find(lower(c->spec.parent));auto parent=found==value->owner->controls.end()?nullptr:std::dynamic_pointer_cast<GtkControl>(found->second);if(!parent||parent->spec.type!="Menu"){g_object_unref(actions);fail(5,"Menu parent is not a menu");}}
     if(c->menuAction)g_object_unref(c->menuAction);if(c->submenuModel)g_object_unref(c->submenuModel);
     const auto name="menu"+std::to_string(c->handle);c->menuAction=g_simple_action_new_stateful(name.c_str(),nullptr,g_variant_new_boolean(c->flag("checked")));c->submenuModel=g_menu_new();
     g_simple_action_set_enabled(c->menuAction,c->flag("enabled",true));
@@ -351,9 +358,11 @@ void GtkHost::rebuildMenus(const std::shared_ptr<GtkForm>& value) {
   auto* model=g_menu_new();
   std::function<void(GMenu*,const std::string&,size_t)> append=[&](GMenu* target,const std::string& parent,size_t depth){
     if(depth>1024)fail(7,"Menu exceeds native depth limit");auto* section=g_menu_new();
-    for(auto& c:controls)if(c->spec.type=="Menu"&&lower(c->spec.parent)==parent&&c->flag("visible",true)){
+    for(auto& c:controls)if(c->spec.type=="Menu"&&lower(c->spec.parent)==parent){
+      // Hidden root menus still own their complete PopupMenu model.
+      append(c->submenuModel,lower(c->spec.name),depth+1);if(!c->flag("visible",true))continue;
       auto caption=c->property("caption",Value::string(u"")).string();if(caption==u"-"){if(g_menu_model_get_n_items(G_MENU_MODEL(section)))g_menu_append_section(target,nullptr,G_MENU_MODEL(section));g_object_unref(section);section=g_menu_new();continue;}
-      append(c->submenuModel,lower(c->spec.name),depth+1);auto action="vb6.menu"+std::to_string(c->handle);auto label=gtkCaption(caption);
+      auto action="vb6.menu"+std::to_string(c->handle);auto label=gtkCaption(caption);
       auto* item=g_menu_item_new(label.c_str(),action.c_str());
       if(g_menu_model_get_n_items(G_MENU_MODEL(c->submenuModel)))g_menu_item_set_submenu(item,G_MENU_MODEL(c->submenuModel));
       if(parent.empty()&&!g_menu_model_get_n_items(G_MENU_MODEL(c->submenuModel))){auto* leaf=g_menu_new();g_menu_append_item(leaf,item);g_menu_append_submenu(section,label.c_str(),G_MENU_MODEL(leaf));g_object_unref(leaf);}else g_menu_append_item(section,item);

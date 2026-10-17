@@ -361,8 +361,9 @@ void GtkControl::set(Runtime& rt,const std::string& raw,Value value,bool) {
   if(name=="tab"&&GTK_IS_NOTEBOOK(widget)){auto n=value.integral();range(n,items("tabs")->values.size());gtk_notebook_set_current_page(GTK_NOTEBOOK(widget),int(n));properties[name]=Value::integer(n,Type::Integer);return;}
   if(name=="selecteditem") {auto item=std::dynamic_pointer_cast<GtkItem>(value.asObject());if(!item||item->owner.lock().get()!=this)fail(380);if(GTK_IS_NOTEBOOK(widget)){gtk_notebook_set_current_page(GTK_NOTEBOOK(widget),int(item->get(rt,"index").integral()-1));return;}auto found=treePaths.find(item->identity);if(found==treePaths.end())fail(380);auto* path=gtk_tree_path_new_from_string(found->second.c_str());gtk_tree_view_expand_to_path(GTK_TREE_VIEW(widget),path);gtk_tree_view_set_cursor(GTK_TREE_VIEW(widget),path,nullptr,FALSE);gtk_tree_path_free(path);return;}
   if(name=="currentx"||name=="currenty"){if(name=="currentx")currentX=value.floating();else currentY=value.floating();return;}
-  if(name=="picture"||name=="icon"||name=="mouseicon"||name=="disabledpicture"||name=="downpicture"){if(value.type!=Type::Object)fail(13);auto object=std::get<ObjectPtr>(value.payload);auto picture=std::dynamic_pointer_cast<GtkPicture>(object);if(object&&!picture)fail(13);properties[name]=value;
-    if((name=="icon")&&(spec.type=="Form"||spec.type=="MDIForm"))gtk_window_set_icon(GTK_WINDOW(form()->window),picture?picture->pixels:nullptr);
+  if(name=="picture"||name=="icon"||name=="mouseicon"||name=="disabledpicture"||name=="downpicture"){if(value.type!=Type::Object)fail(13);auto object=std::get<ObjectPtr>(value.payload);auto picture=std::dynamic_pointer_cast<GtkPicture>(object);if(object&&!picture)fail(13);
+    if((name=="icon")&&(spec.type=="Form"||spec.type=="MDIForm")){gtkNativeRequireX11(form()->window,"Form.Icon");gtk_window_set_icon(GTK_WINDOW(form()->window),picture?picture->pixels:nullptr);}
+    properties[name]=value;
     if(name=="picture"&&picture&&picture->pixels&&((spec.type=="Image"&&!flag("stretch"))||(spec.type=="PictureBox"&&flag("autosize")))){properties["width"]=Value::real(gdk_pixbuf_get_width(picture->pixels)*15);properties["height"]=Value::real(gdk_pixbuf_get_height(picture->pixels)*15);applyFrame();}
     refresh();return;}
   const std::set<std::string> supported={"caption","text","left","top","width","height","visible","enabled","tag","tooltiptext","backcolor","forecolor","fontname","fontsize","fontbold","fontitalic","fontunderline","fontstrikethru","alignment","locked","maxlength","value","min","max","smallchange","largechange","increment","interval","checked","tabindex","tabstop","scalemode","scaleleft","scaletop","scalewidth","scaleheight","drawstyle","drawmode","drawwidth","fillcolor","fillstyle","bordercolor","borderwidth","shape","borderstyle","stretch","sorted","multiselect","gridlines","fullrowselect","fixedrows","fixedcols","rowsel","colsel","simpletext","style","filter","filterindex","filename","dialogtitle","initdir","defaultext","flags","cancelerror","path","pattern","drive","redraw","mousepointer","color","fontcharset","anchor","dock","autoredraw","keypreview"};
@@ -409,7 +410,13 @@ Value GtkControl::invoke(Runtime& rt,const std::string& raw,Args args) {
   if(name=="setfocus") {if(!widget||!gtk_widget_get_sensitive(widget)||!gtk_widget_get_visible(view))fail(5);gtk_widget_grab_focus(editor()?editor():widget);return {};}
   if(name=="refresh"){if(view)gtk_widget_queue_draw(view);host->pump();return {};}
   if(name=="move") {if(args.size()<2||args.size()>4)fail(450);const char* names[]={"left","top","width","height"};for(size_t i=0;i<args.size();++i)if(args[i].value.type!=Type::Missing)properties[names[i]]=args[i].value;applyFrame();return {};}
-  if(name=="zorder") {auto n=integerArgument(args,0);if(n<0||n>1)fail(5);auto* window=view?gtk_widget_get_window(view):nullptr;if(window){if(n)gdk_window_lower(window);else gdk_window_raise(window);}return {};}
+  if(name=="zorder") {auto n=integerArgument(args,0);if(n<0||n>1)fail(5);
+#if GTK_MAJOR_VERSION >= 4
+    if(view)if(auto* parent=gtk_widget_get_parent(view)){if(n)gtk_widget_insert_after(view,parent,nullptr);else gtk_widget_insert_before(view,parent,nullptr);gtk_widget_queue_draw(parent);}
+#else
+    auto* window=view?gtk_widget_get_window(view):nullptr;if(window){if(n)gdk_window_lower(window);else gdk_window_raise(window);}
+#endif
+    return {};}
   if(name=="click"){event("click");return {};}
   if(name=="cls"){drawings.clear();currentX=currentY=0;if(view)gtk_widget_queue_draw(view);return {};}
   if(name=="print")return gtkPrint(*this,std::move(args));
