@@ -130,3 +130,23 @@ test('AppImage dependency traversal rejects a library from another architecture'
   const executable=path.join(directory,'program');await fs.writeFile(executable,app.executable);
   await assert.rejects(bundleAppImageDependencies({appdir,executable,compiler:app.options,toolchain:{sysroot}}),/wrong ELF architecture/);
 });
+test('AppImage dependency traversal rejects conflicting real ELF origin trees',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux ELF dependency reader and native fixture compiler');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-conflicting-dependency-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const sysroot=path.join(directory,'target'),appdir=path.join(directory,'AppDir'),base=path.join(sysroot,'usr/lib');
+  await fs.mkdir(appdir);await fs.mkdir(path.join(base,'a/private'),{recursive:true});await fs.mkdir(path.join(base,'b/private'),{recursive:true});
+  const compile=async(name,source,output,flags=[])=>{
+    const filename=path.join(directory,name+'.c');await fs.writeFile(filename,source);
+    await runPackagingTool('cc',['-shared','-fPIC','-nostdlib',filename,...flags,'-o',output]);
+  };
+  for(const [name,value]of [['a',1],['b',2]]){
+    const origin=path.join(base,name),privateDirectory=path.join(origin,'private');
+    await compile(name+'-shared','int shared(void) { return '+value+'; }',path.join(privateDirectory,'libshared.so'),['-Wl,-soname,libshared.so']);
+    await compile(name,'int shared(void); int '+name+'(void) { return shared(); }',path.join(origin,'lib'+name+'.so'),
+      ['-L'+privateDirectory,'-Wl,--no-as-needed','-lshared','-Wl,-rpath,$ORIGIN/private','-Wl,-soname,lib'+name+'.so']);
+  }
+  const executable=path.join(base,'fixture');
+  await compile('entry','int a(void); int b(void); int entry(void) { return a() + b(); }',executable,
+    ['-L'+path.join(base,'a'),'-L'+path.join(base,'b'),'-Wl,--no-as-needed','-la','-lb','-Wl,-rpath,/usr/lib/a:/usr/lib/b']);
+  await assert.rejects(bundleAppImageDependencies({appdir,executable,compiler:{architecture:process.arch,toolkit:'gtk3'},toolchain:{sysroot}}),/Conflicting AppImage dependency origins for libshared\.so/);
+});

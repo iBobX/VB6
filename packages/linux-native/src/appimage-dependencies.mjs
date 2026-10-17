@@ -11,7 +11,7 @@ export async function bundleAppImageDependencies({appdir,executable,compiler,too
   const sysroot=await fs.realpath(toolchain.sysroot??'/'),readelf=toolchain.readelf??'readelf',machine=compiler.architecture==='arm64'?183:62;
   const triple=compiler.architecture==='arm64'?'aarch64-linux-gnu':'x86_64-linux-gnu';
   const directories=['usr/lib/'+triple,'lib/'+triple,'usr/lib64','lib64','usr/lib','lib'];
-  const files=new Map(),libraries=new Map(),external=new Set(),visited=new Set(),queue=[],caches=[],dataRelocations=[];let total=0,minimumGlibc=[2,39],licenseFiles=0;
+  const files=new Map(),libraries=new Map(),resolutions=new Map(),external=new Set(),visited=new Set(),queue=[],caches=[],dataRelocations=[];let total=0,minimumGlibc=[2,39],licenseFiles=0;
   const settings={signal,cwd:appdir,timeout:30000};
   const add=async(relative,bytes,mode=0o644)=>{
     signal?.throwIfAborted();const digest=hash(bytes),before=files.get(relative);
@@ -54,7 +54,12 @@ export async function bundleAppImageDependencies({appdir,executable,compiler,too
     for(const name of info.needed){
       if(hostLibraries.has(name)){external.add(name);continue;}
       const library=await resolve(name,real,info.runpaths),target='usr/lib/'+name;
-      if(!files.has(target)&&!queue.some(item=>item.destination===target))queue.push({filename:library,destination:target});
+      const selected=resolutions.get(target);
+      // The portable library directory has one file per DT_NEEDED name. Two
+      // different $ORIGIN trees cannot silently choose whichever is seen first,
+      // even when their current bytes match: their own relative imports differ.
+      if(selected&&selected!==library)throw new Error('Conflicting AppImage dependency origins for '+name+': '+selected+' and '+library);
+      if(!selected){resolutions.set(target,library);queue.push({filename:library,destination:target});}
     }
   }
   await enqueue(executable);

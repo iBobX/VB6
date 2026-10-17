@@ -73,7 +73,7 @@ npm run build:linux -- examples/calculator.vb6web \
 
 Keep the sysroot's libraries, GTK/GIO/GdkPixbuf modules and caches, `/usr/share` runtime data, and package licenses. Debian/Ubuntu notices reside under `/usr/share/doc/*/copyright` and `/usr/share/common-licenses`; `/usr/share/licenses` layouts are also supported. GTK 4 requires `iso_639.xml` and `iso_639_3.xml` under `/usr/share/xml/iso-codes`.
 
-Absolute links such as `/lib -> /usr/lib` resolve inside the target root. Escaping links, unsupported paths, and mismatched architectures are rejected. Loader caches may use target-absolute paths or paths prefixed with the selected sysroot, provided every module corresponds to an actual bundled target file.
+Absolute links such as `/lib -> /usr/lib` resolve inside the target root. Escaping links, unsupported paths, and mismatched architectures are rejected. If separate `$ORIGIN` dependency trees resolve the same library name to different target files, export rejects the ambiguity instead of silently choosing one for the shared bundle directory. Loader caches may use target-absolute paths or paths prefixed with the selected sysroot, provided every module corresponds to an actual bundled target file.
 
 ## Flatpak
 
