@@ -536,14 +536,19 @@ class Reader {
           if(colors.size()>=GtkRtfMaxTable)fail(7,"RTF color table is too large");
           colors.push_back(state.red<0&&state.green<0&&state.blue<0?-1:std::max(0,state.red)|(std::max(0,state.green)<<8)|(std::max(0,state.blue)<<16));state.red=state.green=state.blue=-1;
         }else if(ch!=u' '&&ch!=u'\t')invalid("text in color table");break;
-      case Destination::BulletText:state.bulletText+=value;if(state.bulletText.size()>32)unsupported("pntxtb (custom list marker)");break;
+      case Destination::BulletText:state.bulletText+=value;if(state.bulletText.size()>64)fail(7,"RTF list affix exceeds 64 UTF-16 units");break;
       case Destination::ListMarker:
         if(value.find_first_not_of(u"\t")!=Text::npos) {
           if(state.markerStyle){const auto& first=*state.markerStyle;const auto& next=state.style;if(std::tie(first.font,first.size,first.bold,first.italic,first.foreground)!=std::tie(next.font,next.size,next.bold,next.italic,next.foreground))unsupported("listtext (mixed marker character formatting)");}
           else state.markerStyle=state.style;
           state.markerUsedFlags|=state.markerFlags;
         }
-        state.bulletText+=value;if(state.bulletText.size()>64)fail(7,"RTF list marker exceeds 64 UTF-16 units");break;
+        state.bulletText+=value;
+        // pntext includes the separating tab and may include trailing spaces.
+        // Bound visible marker text independently so a maximum-length marker
+        // can read the writer's own trailing separator on the next import.
+        {const auto last=state.bulletText.find_last_not_of(u"\t ");if((last!=Text::npos&&last>=64)||state.bulletText.size()>128)fail(7,"RTF list marker exceeds 64 visible UTF-16 units or its separator budget");}
+        break;
       case Destination::FieldInstruction:
         if(!state.field)invalid("field instruction outside a field");state.field->instruction+=value;if(state.field->instruction.size()>65536)fail(7,"RTF field instruction exceeds 65536 UTF-16 units");break;
       case Destination::Field:for(auto ch:value)if(ch!=u' '&&ch!=u'\t')invalid("field text outside its result");break;
