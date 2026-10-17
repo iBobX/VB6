@@ -189,6 +189,7 @@ export function compileFormXaml(text, {form:previous,settings={},schema=createVb
       if(['CommandButton','CheckBox','OptionButton','Label','Frame'].includes(type))set('Caption','');
       if(node.type.name==='SearchField')set('MacOSControlStyle','search');
       if(node.type.name==='Switch')set('MacOSControlStyle','switch');
+      if(node.type.name==='SegmentedControl')set('MacOSControlStyle','segmented');
       if(node.type.name==='TabView')target.designerTabPages=true;
       if(node.type.name==='SecureField')set('PasswordChar','*');
       if(node.type.name==='TextEditor'){set('MultiLine',-1);set('ScrollBars',3);}
@@ -340,6 +341,7 @@ export function compileFormXaml(text, {form:previous,settings={},schema=createVb
       if(type==='ComboBox'&&!values.IsEditable)set('Style',mac&&node.type.name==='ComboBox'?0:2);
       if(mac&&node.type.name==='PopUpButton'&&target.properties.Style!==2)error('PopUpButton is not editable; use macOS ComboBox for editable text.',values.IsEditable?.source??node.source);
       if(mac&&node.type.name==='SecureField'&&!target.properties.PasswordChar)error('SecureField requires a nonempty PasswordChar.',values.PasswordChar?.source??node.source);
+      if(mac&&node.type.name==='SegmentedControl'&&!values.Segments)error('SegmentedControl requires at least one Segment.',node.source);
       if(mac&&target.properties.MacOSControlStyle==='switch'&&![0,1].includes(target.properties.Value))error('A macOS switch supports on/off state only; use CheckBox for an indeterminate value.',node.source);
       if(mac&&node.type.name==='TabView') {
         if(!values.Items)error('TabView requires at least one TabItem.',node.source);
