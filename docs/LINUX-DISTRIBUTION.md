@@ -158,17 +158,18 @@ The exporter uses argument arrays and does not create shell commands from projec
 
 `tools/test-linux-native-distribution.mjs` uses independent SquashFS and OSTree readers, verifies the original ELF/resources/modes, rejects damaged containers, and tests actual AppImage and sandboxed Flatpak execution. Native controls, clipboard, Cairo graphics, PNG/ICO loaders, file I/O, timers, modal FontChooser, and cross-launch `App.PrevInstance` are exercised by fully compiled VB fixtures. AppImage instance launches use separate temporary extraction roots; fixture-owned extraction caches are removed after their processes stop. An isolated fixture signing key verifies the real signed-bundle path. Maximum-length accepted Flatpak identities are tested through the real exporter.
 
-Install GNOME Platform 50 into an isolated `FLATPAK_USER_DIR`, then run on matching native hardware:
+Install GNOME Platform 50 into an isolated `FLATPAK_USER_DIR`, then run on matching native hardware. Export that variable before starting the private D-Bus session: its activated Flatpak portal must resolve the same installation when GTK requests a sandboxed image decoder.
 
 ```sh
+export FLATPAK_USER_DIR=/path/to/isolated-flatpak-user
 dbus-run-session -- xvfb-run -a \
   node tools/test-linux-native-distribution.mjs \
   --architecture x64 --toolkit gtk4 \
-  --flatpak-user-dir /path/to/isolated-flatpak-user \
+  --flatpak-user-dir "$FLATPAK_USER_DIR" \
   --report reports/linux-native-distribution-gtk4-x64
 ```
 
-The CI matrix runs both architectures and both toolkits with execution, GUI checks, instance checks, signatures, and icon isolation enabled. GTK 4 fixtures select software rendering explicitly; production launchers retain user rendering/accessibility choices. The GTK 4 AppImage FontChooser check requires user/mount namespaces to mask the host ISO data inside that test process. Flatpak execution retains its normal sandbox.
+The CI matrix runs both architectures and both toolkits with execution, GUI checks, instance checks, signatures, and icon isolation enabled. GTK 4 fixtures select software rendering with the appropriate switches for the bundled GTK4.14 or GNOME Platform's GTK4.22; production launchers retain user rendering/accessibility choices. The GTK 4 AppImage FontChooser check requires user/mount namespaces to mask the host ISO data inside that test process. Flatpak execution retains its normal application and image-decoder sandboxes.
 
 For development environments that can only inspect containers, `--execute off` is explicit and the resulting report is labelled `containers-only`. It does not qualify native execution. No container-only result substitutes for the native release matrix.
 

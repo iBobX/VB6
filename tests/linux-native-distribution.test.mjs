@@ -29,6 +29,16 @@ test('Flatpak defaults are bounded, versioned and avoid broad host access',()=>{
   assert.ok(Object.isFrozen(options.flatpakPermissions));
   assert.deepEqual(linuxNativeDistributionOptions({format:'flatpak',appId:'org.example.Test',flatpakPermissions:[]}).flatpakPermissions,[]);
 });
+test('native Flatpak qualification rejects a different outer portal installation before packaging',async t=>{
+  if(process.platform!=='linux'){t.skip('Native Linux qualification environment');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-flatpak-portal-env-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const qualifier=path.resolve(import.meta.dirname,'../tools/test-linux-native-distribution.mjs');
+  for(const userDirectory of [undefined,path.join(directory,'different')]){
+    await assert.rejects(runPackagingTool(process.execPath,[qualifier,'--format','flatpak','--flatpak-user-dir',path.join(directory,'selected'),'--report',path.join(directory,'report')],
+      {env:{NODE_TEST_CONTEXT:undefined,FLATPAK_USER_DIR:userDirectory}}),/Export the matching FLATPAK_USER_DIR before starting dbus-run-session/);
+  }
+  assert.deepEqual(await fs.readdir(directory),[],'Preflight creates no packages, installs or reports');
+});
 test('native package options reject identity, INI, shell and permission injection',()=>{
   for(const options of [{format:'zip'},{format:'flatpak',appId:'org.example.Bad;exec'}, {format:'flatpak',appId:'org..bad'},
     {format:'flatpak',runtime:'org.freedesktop.Platform'},{format:'flatpak',runtimeVersion:'49'},{format:'flatpak',runtimeVersion:'50beta'},

@@ -45,19 +45,31 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
   flatpakUserDirectory,flatpakIconSandbox=true,execute=true,gtk=true,instances=true,signing=true,format='all'}={}) {
   assert.equal(process.platform,'linux');assert.ok(['x64','arm64'].includes(architecture));assert.ok(['gtk3','gtk4'].includes(toolkit));
   assert.ok(['all','appimage','flatpak'].includes(format));const formats=format==='all'?['appimage','flatpak']:[format];
-  if(execute){assert.equal(process.arch,architecture,'Native package execution requires matching native hardware.');if(formats.includes('flatpak'))assert.ok(flatpakUserDirectory,'Native Flatpak execution requires --flatpak-user-dir with GNOME Platform 50 already installed.');}
+  if(execute){
+    assert.equal(process.arch,architecture,'Native package execution requires matching native hardware.');
+    if(formats.includes('flatpak')){
+      assert.ok(flatpakUserDirectory,'Native Flatpak execution requires --flatpak-user-dir with GNOME Platform 50 already installed.');
+      // D-Bus activates the nested-image-loader portal from its own environment,
+      // before any per-command overrides in this process can take effect.
+      assert.ok(process.env.FLATPAK_USER_DIR&&path.resolve(process.env.FLATPAK_USER_DIR)===path.resolve(flatpakUserDirectory),
+        'Export the matching FLATPAK_USER_DIR before starting dbus-run-session so the Flatpak portal uses the same isolated installation.');
+    }
+  }
   const work=await fs.mkdtemp(path.join(os.tmpdir(),'vb6-native-distribution-test-')),checks=[];
   const report={platform:process.platform,architecture,toolkit,formats,hostArchitecture:process.arch,executionMode:execute?'native':'containers-only',
     requestedChecks:{execute,gtk,instances,signing,flatpakIconSandbox},passed:false,checks};
   // Fixture-only software rendering makes the native CI display deterministic.
   // Production wrappers retain the user's GTK/rendering/accessibility settings.
   const fixtureEnvironment=toolkit==='gtk4'?{GDK_DEBUG:'gl-disable:vulkan-disable',GSK_RENDERER:'cairo',GTK_A11Y:'test'}:{};
+  // GNOME Platform 50 has GTK4.22, where GPU feature switches moved from
+  // GDK_DEBUG to GDK_DISABLE. The AppImage carries Ubuntu's GTK4.14 instead.
+  const flatpakFixtureEnvironment=toolkit==='gtk4'?{...fixtureEnvironment,GDK_DEBUG:'',GDK_DISABLE:'gl,vulkan'}:{};
   const environment={LC_ALL:'C',...fixtureEnvironment,...(flatpakUserDirectory?{FLATPAK_USER_DIR:path.resolve(flatpakUserDirectory)}:{})};
   // The upstream extract-and-run mode caches extracted images. Keep only our
   // AppImage children inside a private temporary root so final fixture cleanup
   // also removes those caches; do not leak a host-only TMPDIR into Flatpak.
   const runtimeTemporary=path.join(work,'runtime-temporary'),appImageEnvironment={...environment,TMPDIR:runtimeTemporary};
-  const flatpakRun=appId=>['--user','run','--cwd=/var/data',...Object.entries(fixtureEnvironment).map(([key,value])=>'--env='+key+'='+value),appId];
+  const flatpakRun=appId=>['--user','run','--cwd=/var/data',...Object.entries(flatpakFixtureEnvironment).map(([key,value])=>'--env='+key+'='+value),appId];
   const run=(command,args,options={})=>runPackagingTool(command,args,{cwd:work,env:environment,timeout:120000,...options});
   const runAppImage=file=>run(file,['--appimage-extract-and-run'],{env:appImageEnvironment});
   const packageOptions={packageName:'vb6-native-'+toolkit+'-'+architecture,version:'2.3.4',license:'MIT',maintainer:'Native packaging qualification'};
