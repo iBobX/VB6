@@ -305,15 +305,20 @@ void refreshNativeSegments(MacControl&c) {
   int style=toolbar&&!collection->items.empty()&&collection->items.front()->properties.count("style")?int(collection->items.front()->properties.at("style").integral()):2;
   auto tracking=!toolbar||style==2?NSSegmentSwitchTrackingSelectOne:style==1?NSSegmentSwitchTrackingSelectAny:NSSegmentSwitchTrackingMomentary;
   if(segments.trackingMode!=tracking)segments.trackingMode=tracking;
-  c.appearanceSegmentItems.clear();auto tabs=toolbar?nil:(NSTabView*)c.widget;
+  c.appearanceSegmentItems.clear();auto tabs=toolbar?nil:(NSTabView*)c.widget;NSInteger selectedSegment=-1;
   for(size_t i=0;i<visible.size();++i) {
     const auto&item=visible[i];auto property=[&](const char*key,Value fallback){auto found=item->properties.find(key);return found==item->properties.end()?fallback:found->second;};
     NSString*label=ns(captionText(property("text",Value::string(u"")).string()));if(![[segments labelForSegment:NSInteger(i)]isEqualToString:label])[segments setLabel:label forSegment:NSInteger(i)];
     [segments setEnabled:property("enabled",Value::boolean(true)).truth() forSegment:NSInteger(i)];
     [(NSSegmentedCell*)segments.cell setToolTip:ns(property("tooltiptext",Value::string(u"")).string())forSegment:NSInteger(i)];
     auto selected=toolbar?property("value",Value::integer(0)).truth():[tabs.selectedTabViewItem.identifier isEqual:[NSString stringWithFormat:@"%llu",static_cast<unsigned long long>(item->identity)]];
-    [segments setSelected:selected forSegment:NSInteger(i)];c.appearanceSegmentItems.push_back(item->identity);
+    if(tracking==NSSegmentSwitchTrackingSelectOne){if(selected)selectedSegment=NSInteger(i);}
+    else [segments setSelected:selected forSegment:NSInteger(i)];
+    c.appearanceSegmentItems.push_back(item->identity);
   }
+  // SelectOne has one control-level selection. Apply it once after resolving
+  // visible identities, including -1 when the selected model item is hidden.
+  if(tracking==NSSegmentSwitchTrackingSelectOne)segments.selectedSegment=selectedSegment;
   if(!toolbar)tabs.drawsBackground=NO;
   layoutSegments(c,c.appearanceContent?:c.view);
 }

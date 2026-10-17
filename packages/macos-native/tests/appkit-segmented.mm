@@ -53,6 +53,7 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   auto segments=tab->appearanceSegments;assert(segments&&[segments isKindOfClass:NSSegmentedControl.class]);
   assert(tab->widget==tabs&&tab->handle==tabHandle&&tabs.tabViewType==NSNoTabsNoBorder&&!tabs.drawsBackground&&segments.segmentCount==3);
   assert(segments.trackingMode==NSSegmentSwitchTrackingSelectOne&&segments.segmentDistribution==NSSegmentDistributionFillEqually);
+  assert(segments.selectedSegment==0&&[segments isSelectedForSegment:0]&&![segments isSelectedForSegment:1]&&![segments isSelectedForSegment:2]);
   assert(host.control(tabHandle)==tab&&host.controlForView(segments)==tab&&tabClicks==0);
   assertInactiveInsertion();
   // A VB validation handler can remove the destination while AppKit hands off
@@ -75,8 +76,10 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   second->set(rt,"enabled",Value::boolean(true));second->set(rt,"visible",Value::boolean(false));
   assert(segments.segmentCount==2&&tab->appearanceSegmentItems[1]==third->identity);assertEditor();
   rejected([&]{setting(rt,tab,"macoscontrolstyle",u"automatic");},438);assert(tab->appearanceSegments==segments);
-  tab->set(rt,"tab",Value::integer(1));assert(tabs.selectedTabViewItem==[tabs tabViewItemAtIndex:1]&&segments.selectedSegment==-1&&tabClicks==1);
+  tab->set(rt,"tab",Value::integer(1));assert(tabs.selectedTabViewItem==[tabs tabViewItemAtIndex:1]);
+  assert(segments.selectedSegment==-1);assert(![segments isSelectedForSegment:0]&&![segments isSelectedForSegment:1]);assert(tabClicks==1);
   assert(window.firstResponder==segments);tab->set(rt,"tab",Value::integer(0));assert(tabClicks==2);
+  assert(segments.selectedSegment==0&&[segments isSelectedForSegment:0]&&![segments isSelectedForSegment:1]);
   segments.selectedSegment=1;[segments sendAction:segments.action to:segments.target];host.check();assert(tab->get(rt,"tab").integral()==2&&tabClicks==3);
   assert(tab->get(rt,"selecteditem").asObject()==third);
   tab->set(rt,"enabled",Value::boolean(false));assert(!segments.enabled);segments.selectedSegment=0;[segments sendAction:segments.action to:segments.target];host.check();assert(tabClicks==3&&tab->get(rt,"tab").integral()==2);
@@ -157,7 +160,10 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
     assert(b->get(rt,"value").integral()==(mode==0?0:1));assert(a->get(rt,"value").integral()==(mode==1?1:0));
     b->set(rt,"enabled",Value::boolean(false));before=buttonClicks;native.selectedSegment=1;[native sendAction:native.action to:native.target];host.check();assert(buttonClicks==before);
     b->set(rt,"enabled",Value::boolean(true));a->set(rt,"visible",Value::boolean(false));assert(native.segmentCount==1&&toolbar->appearanceSegmentItems.front()==b->identity);
-    if(mode==2){a->set(rt,"value",Value::integer(1));assert(b->get(rt,"value").integral()==0&&native.selectedSegment==-1);b->set(rt,"value",Value::integer(1));assert(a->get(rt,"value").integral()==0&&native.selectedSegment==0);}
+    if(mode==2){
+      a->set(rt,"value",Value::integer(1));assert(b->get(rt,"value").integral()==0);assert(native.selectedSegment==-1);assert(![native isSelectedForSegment:0]);
+      b->set(rt,"value",Value::integer(1));assert(a->get(rt,"value").integral()==0);assert(native.selectedSegment==0&&[native isSelectedForSegment:0]);
+    }
     auto count=buttons->items.size();rejected([&]{add(rt,buttons,u"invalid",u"Invalid",(mode+1)%3);},380);assert(buttons->items.size()==count);
     rejected([&]{buttons->invoke(rt,"add",{Arg(Value::missing()),Arg(Value::string(u"image")),Arg(Value::string(u"Image")),Arg(Value::integer(mode)),Arg(Value::integer(1))});},438);assert(buttons->items.size()==count);
     rejected([&]{b->set(rt,"style",Value::integer((mode+1)%3));},380);assert(b->get(rt,"style").integral()==mode);
