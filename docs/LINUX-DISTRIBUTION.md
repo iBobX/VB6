@@ -156,7 +156,7 @@ The exporter uses argument arrays and does not create shell commands from projec
 
 ## Native qualification
 
-`tools/test-linux-native-distribution.mjs` uses independent SquashFS and OSTree readers, verifies the original ELF/resources/modes, rejects damaged containers, and tests actual AppImage and sandboxed Flatpak execution. Native controls, clipboard, Cairo graphics, SVG/ICO loaders, file I/O, timers, modal FontChooser, and cross-launch `App.PrevInstance` are exercised by fully compiled VB fixtures. An isolated fixture signing key verifies the real signed-bundle path. Maximum-length accepted Flatpak identities are tested through the real exporter.
+`tools/test-linux-native-distribution.mjs` uses independent SquashFS and OSTree readers, verifies the original ELF/resources/modes, rejects damaged containers, and tests actual AppImage and sandboxed Flatpak execution. Native controls, clipboard, Cairo graphics, PNG/ICO loaders, file I/O, timers, modal FontChooser, and cross-launch `App.PrevInstance` are exercised by fully compiled VB fixtures. An isolated fixture signing key verifies the real signed-bundle path. Maximum-length accepted Flatpak identities are tested through the real exporter.
 
 Install GNOME Platform 50 into an isolated `FLATPAK_USER_DIR`, then run on matching native hardware:
 
@@ -171,6 +171,8 @@ dbus-run-session -- xvfb-run -a \
 The CI matrix runs both architectures and both toolkits with execution, GUI checks, instance checks, signatures, and icon isolation enabled. GTK 4 fixtures select software rendering explicitly; production launchers retain user rendering/accessibility choices. The GTK 4 AppImage FontChooser check requires user/mount namespaces to mask the host ISO data inside that test process. Flatpak execution retains its normal sandbox.
 
 For development environments that can only inspect containers, `--execute off` is explicit and the resulting report is labelled `containers-only`. It does not qualify native execution. No container-only result substitutes for the native release matrix.
+
+`--format appimage` or `--format flatpak` permits focused local debugging through the same fixtures. The default is `all`, and every report records its selected formats. Native CI uses the default and requires both formats for each architecture/toolkit pair.
 
 ## References
 

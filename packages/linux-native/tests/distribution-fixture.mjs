@@ -1,4 +1,5 @@
 import {createControl,createForm} from '../../../src/project/model.js';
+import {multiPictureBytes} from '../../macos-native/tests/picture-frames.mjs';
 
 export const nativeDistributionProject={schema:1,name:'Native Package Żółw $(literal)',startup:'Sub Main',modules:[{name:'MainModule',kind:'module',code:`Option Explicit
 Public Sub Main()
@@ -48,9 +49,9 @@ End Sub`;
 }
 
 export function nativeDistributionImageResources() {
-  const ico=Buffer.alloc(70);ico.writeUInt16LE(1,2);ico.writeUInt16LE(1,4);ico[6]=1;ico[7]=1;
-  ico.writeUInt16LE(1,10);ico.writeUInt16LE(32,12);ico.writeUInt32LE(48,14);ico.writeUInt32LE(22,18);
-  ico.writeUInt32LE(40,22);ico.writeInt32LE(1,26);ico.writeInt32LE(2,30);ico.writeUInt16LE(1,34);ico.writeUInt16LE(32,36);
-  ico.writeUInt32LE(4,42);ico[64]=255;ico[65]=255;
-  return {'Resources/package-image.ico':ico,'Resources/package-image.svg':'<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="red"/></svg>'};
+  // Reuse the established independent multi-frame ICO and its embedded PNG.
+  // VB's native picture decoder intentionally accepts raster/ICO/CUR formats;
+  // GTK's separate SVG loader serves theme/icon data rather than LoadPicture.
+  const ico=Buffer.from(multiPictureBytes()),entry=6+16*3,start=ico.readUInt32LE(entry+12),length=ico.readUInt32LE(entry+8);
+  return {'Resources/package-image.ico':ico,'Resources/package-image.png':ico.subarray(start,start+length)};
 }

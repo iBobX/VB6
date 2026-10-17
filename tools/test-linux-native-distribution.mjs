@@ -37,11 +37,13 @@ async function instancePair(command,args,settings) {
 }
 
 export async function testLinuxNativeDistribution({architecture=process.arch,toolkit='gtk3',sysroot,reportDirectory=path.join(root,'reports/linux-native-distribution-'+toolkit+'-'+architecture),
-  flatpakUserDirectory,flatpakIconSandbox=true,execute=true,gtk=true,instances=true,signing=true}={}) {
+  flatpakUserDirectory,flatpakIconSandbox=true,execute=true,gtk=true,instances=true,signing=true,format='all'}={}) {
   assert.equal(process.platform,'linux');assert.ok(['x64','arm64'].includes(architecture));assert.ok(['gtk3','gtk4'].includes(toolkit));
-  if(execute){assert.equal(process.arch,architecture,'Native package execution requires matching native hardware.');assert.ok(flatpakUserDirectory,'Native execution requires --flatpak-user-dir with GNOME Platform 50 already installed.');}
+  assert.ok(['all','appimage','flatpak'].includes(format));const formats=format==='all'?['appimage','flatpak']:[format];
+  if(execute){assert.equal(process.arch,architecture,'Native package execution requires matching native hardware.');if(formats.includes('flatpak'))assert.ok(flatpakUserDirectory,'Native Flatpak execution requires --flatpak-user-dir with GNOME Platform 50 already installed.');}
   const work=await fs.mkdtemp(path.join(os.tmpdir(),'vb6-native-distribution-test-')),checks=[];
-  const report={platform:process.platform,architecture,toolkit,hostArchitecture:process.arch,executionMode:execute?'native':'containers-only',passed:false,checks};
+  const report={platform:process.platform,architecture,toolkit,formats,hostArchitecture:process.arch,executionMode:execute?'native':'containers-only',
+    requestedChecks:{execute,gtk,instances,signing,flatpakIconSandbox},passed:false,checks};
   // Fixture-only software rendering makes the native CI display deterministic.
   // Production wrappers retain the user's GTK/rendering/accessibility settings.
   const fixtureEnvironment=toolkit==='gtk4'?{GDK_DEBUG:'gl-disable:vulkan-disable',GSK_RENDERER:'cairo',GTK_A11Y:'test'}:{};
@@ -60,7 +62,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
   try {
     await fs.mkdir(reportDirectory,{recursive:true});
     const application=await exportLinuxApplication(nativeDistributionProject,{architecture,toolkit},{resources:{'Resources/data.txt':'NATIVE_PACKAGE_RESOURCE_OK\n'}});
-    for(const format of ['appimage','flatpak']){
+    for(const format of formats){
       const appId=identity('NativeQualification');
       const result=await packageLinuxApplicationNative(application,{...packageOptions,format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
       const directory=path.join(work,'independent-'+format);let executable;
@@ -103,22 +105,22 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
     }
     if(execute&&gtk){
       const project=linuxGtkProject();
-      project.modules[0].code=project.modules[0].code.replace('    Debug.Print "LINUX_GTK_GRAPHICS_OK"',`    Set Picture1.Picture = LoadPicture(App.Path & "/../Resources/package-image.svg")
+      project.modules[0].code=project.modules[0].code.replace('    Debug.Print "LINUX_GTK_GRAPHICS_OK"',`    Set Picture1.Picture = LoadPicture(App.Path & "/../Resources/package-image.png")
     Debug.Assert Picture1.Picture.Width > 0
     Set Image1.Picture = LoadPicture(App.Path & "/../Resources/package-image.ico")
     Debug.Assert Image1.Picture.Width > 0
     Debug.Print "LINUX_GTK_PACKAGED_IMAGES_OK"
     Debug.Print "LINUX_GTK_GRAPHICS_OK"`);
       const gui=await exportLinuxApplication(project,{architecture,toolkit},{resources:nativeDistributionImageResources()});
-      for(const format of ['appimage','flatpak']){
+      for(const format of formats){
         const appId=identity('GtkQualification');
         const result=await packageLinuxApplicationNative(gui,{...packageOptions,packageName:packageOptions.packageName+'-gtk',format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
         const execution=format==='appimage'?await run(file,['--appimage-extract-and-run']):await install(file,appId);
         assert.match(execution.stdout,/LINUX_GTK_CONTROLS_OK/);assert.match(execution.stdout,/LINUX_GTK_GRAPHICS_OK/);assert.match(execution.stdout,/LINUX_GTK_PACKAGED_IMAGES_OK/);
-        checks.push({format,nativeGtkControls:true,packagedSvgAndIco:true,toolkit});console.log('PASS '+architecture+' '+toolkit+' '+format+': native controls, clipboard, graphics, image loaders, file I/O and timers');
+        checks.push({format,nativeGtkControls:true,packagedPngAndIco:true,toolkit});console.log('PASS '+architecture+' '+toolkit+' '+format+': native controls, clipboard, graphics, image loaders, file I/O and timers');
       }
       const font=await exportLinuxApplication(nativeDistributionFontProject(),{architecture,toolkit});
-      for(const format of ['appimage','flatpak']){
+      for(const format of formats){
         const appId=identity('FontQualification');
         const result=await packageLinuxApplicationNative(font,{...packageOptions,packageName:packageOptions.packageName+'-font',format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
         let execution;
@@ -138,7 +140,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
     }
     if(execute&&instances){
       const app=await exportLinuxApplication(nativeDistributionInstanceProject,{architecture,toolkit});
-      for(const format of ['appimage','flatpak']){
+      for(const format of formats){
         const appId=identity('InstanceQualification');
         const result=await packageLinuxApplicationNative(app,{...packageOptions,packageName:packageOptions.packageName+'-instance',format,...(format==='flatpak'?{appId}:{})},{toolchain:toolchain(format)}),file=await write(result);
         if(format==='appimage')await instancePair(file,['--appimage-extract-and-run'],{cwd:work,env:environment});
@@ -147,11 +149,13 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
       }
     }
     // Exercise maximum accepted IDs with real filesystem/OSTree readers.
-    const longId='org.example.'+'A'.repeat(230);
-    const longBundle=await packageLinuxApplicationNative(application,{...packageOptions,format:'flatpak',appId:longId},{toolchain:toolchain('flatpak')});
-    assert.ok(Buffer.byteLength(longBundle.filename)<=255);assert.ok(longBundle.report.nativePackaging.ref.includes('/'+longId+'/'));
-    checks.push({format:'flatpak',maximumIdentityLengthVerified:true});
-    if(signing){
+    if(formats.includes('flatpak')){
+      const longId='org.example.'+'A'.repeat(230);
+      const longBundle=await packageLinuxApplicationNative(application,{...packageOptions,format:'flatpak',appId:longId},{toolchain:toolchain('flatpak')});
+      assert.ok(Buffer.byteLength(longBundle.filename)<=255);assert.ok(longBundle.report.nativePackaging.ref.includes('/'+longId+'/'));
+      checks.push({format:'flatpak',maximumIdentityLengthVerified:true});
+    }
+    if(signing&&formats.includes('flatpak')){
       const keyring=path.join(work,'signing-keys'),publicKey=path.join(work,'signing-public.asc');await fs.mkdir(keyring,{mode:0o700});
       try{
         await run('gpg',['--homedir',keyring,'--batch','--pinentry-mode','loopback','--passphrase','','--quick-generate-key','VB6 native packaging test <fixture@example.invalid>','ed25519','sign','0']);
@@ -186,7 +190,7 @@ export async function testLinuxNativeDistribution({architecture=process.arch,too
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const options={};for(let index=2;index<process.argv.length;index+=2){
     const flag=process.argv[index],value=process.argv[index+1];
-    const fields={'--architecture':'architecture','--toolkit':'toolkit','--sysroot':'sysroot','--report':'reportDirectory','--flatpak-user-dir':'flatpakUserDirectory',
+    const fields={'--architecture':'architecture','--toolkit':'toolkit','--format':'format','--sysroot':'sysroot','--report':'reportDirectory','--flatpak-user-dir':'flatpakUserDirectory',
       '--flatpak-icon-sandbox':'flatpakIconSandbox','--execute':'execute','--gtk':'gtk','--instances':'instances','--signing':'signing'};
     if(!Object.hasOwn(fields,flag)||value===undefined)throw new Error('Unknown or missing native distribution qualification option: '+flag);
     if(['--flatpak-icon-sandbox','--execute','--gtk','--instances','--signing'].includes(flag)){
