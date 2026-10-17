@@ -5,8 +5,7 @@
 namespace {
 BOOL nativeEditShouldEnd(const std::weak_ptr<vb6::MacControl>&model,NSText*editor) {
   auto c=model.lock();if(!c||c->disposed)return YES;
-  vb6::nativeEditCapture(*c,editor);auto cancel=std::make_shared<vb6::Cell>(vb6::Value::boolean(false),"boolean");
-  c->host->event([c,cancel]{c->event("validate",{vb6::Arg(vb6::cellRef(cancel))});});return !cancel->get().truth();
+  return vb6::nativeEditValidate(*c,editor);
 }
 }
 @implementation VB6Canvas

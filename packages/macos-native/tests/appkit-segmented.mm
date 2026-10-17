@@ -58,13 +58,13 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   // A VB validation handler can remove the destination while AppKit hands off
   // the source field editor. Both activation paths must recheck membership.
   for(bool activate:{false,true}) {
-    auto destination=add(rt,items,u"transient",u"Transient");bool validated=false;
+    auto destination=add(rt,items,u"transient",u"Transient");int validations=0;
     Procedure validate;validate.name="C2_Validate";validate.parameters={{"Cancel","boolean",true}};
-    validate.code=[&](Frame&)->Value{if(!validated){validated=true;items->invoke(rt,"remove",{Arg(Value::string(u"transient"))});}return {};};
+    validate.code=[&](Frame&)->Value{if(++validations==1)items->invoke(rt,"remove",{Arg(Value::string(u"transient"))});return {};};
     form->module->procedures["c2_validate"]=std::move(validate);
     if(activate){segments.selectedSegment=3;[segments sendAction:segments.action to:segments.target];host.check();}
     else rejected([&]{tab->set(rt,"tab",Value::integer(3));},380);
-    form->module->procedures.erase("c2_validate");assert(validated&&items->items.size()==3&&tabs.selectedTabViewItem==firstPage&&tabClicks==0);
+    form->module->procedures.erase("c2_validate");assert(validations==1&&items->items.size()==3&&tabs.selectedTabViewItem==firstPage&&tabClicks==0);
     edit->invoke(rt,"setfocus",{});assertEditor();
   }
   auto beforeImage=items->items.size();rejected([&]{items->invoke(rt,"add",{Arg(Value::missing()),Arg(Value::string(u"image")),Arg(Value::string(u"Image")),Arg(Value::integer(1))});},438);assert(items->items.size()==beforeImage);

@@ -42,7 +42,7 @@ struct MacControl:Object {
   std::shared_ptr<NativeRecordsetGrid> dataBinding;
   std::optional<RecordsetGridEdit> boundEdit;
   uint64_t boundSelection=0;bool boundColumnsReady=false;
-  std::map<uint64_t,id>outlineTokens;double currentX=0,currentY=0;size_t suspendLayout=0,eventSuppression=0;NSSize originalParentSize=NSZeroSize;NSRect originalFrame=NSZeroRect;
+  std::map<uint64_t,id>outlineTokens;double currentX=0,currentY=0;size_t suspendLayout=0,eventSuppression=0,editValidationSuppression=0;NSSize originalParentSize=NSZeroSize;NSRect originalFrame=NSZeroRect;
   MacControl(MacHost&h,std::shared_ptr<Instance>f,ControlSpec s):host(&h),owner(f),spec(std::move(s)){}
   std::string className()const override{return spec.type;}
   Value get(Runtime&,const std::string&)override;void set(Runtime&,const std::string&,Value,bool=false)override;Value invoke(Runtime&,const std::string&,Args)override;Ref reference(Runtime&,const std::string&,Args={})override;

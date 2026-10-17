@@ -47,6 +47,33 @@ std::shared_ptr<MacControl> focusedChild(MacControl&c,NSView*page) {
   auto result=c.host->controlForView((NSView*)responder);
   return result&&result.get()!=&c&&[result->widget isDescendantOf:page]?result:nullptr;
 }
+enum class TabFocusResult {Ready,Composition,Veto,Disposed,Removed};
+TabFocusResult handoffTabFocus(MacControl&c,NSTabView*tabs,NSTabViewItem*target) {
+  auto child=focusedChild(c,tabs.selectedTabViewItem.view);if(!child)return TabFocusResult::Ready;
+  NSWindow*window=c.view.window;const bool editing=isNativeEdit(*child);NSRange selection=NSMakeRange(0,0);
+  auto state=[&]{return c.disposed||c.widget!=tabs?TabFocusResult::Disposed:[tabs indexOfTabViewItem:target]==NSNotFound?TabFocusResult::Removed:TabFocusResult::Ready;};
+  if(editing) {
+    auto editor=[child->widget isKindOfClass:NSTextView.class]?(NSTextView*)child->widget:[child->widget isKindOfClass:NSTextField.class]?(NSTextView*)((NSTextField*)child->widget).currentEditor:nil;
+    if(editor.hasMarkedText)return TabFocusResult::Composition;
+    selection=nativeEditSelection(*child);
+    // NSControl asks its delegate to validate only an edited cell. A VB page
+    // transition validates even an unchanged editor, before focus can leave.
+    const bool accepted=nativeEditValidate(*child,editor);c.host->check();
+    if(auto result=state();result!=TabFocusResult::Ready)return result;
+    if(!accepted){if(!child->disposed)nativeEditSelect(*child,selection);return TabFocusResult::Veto;}
+  }
+  bool accepted;
+  {
+    // AppKit may also ask its delegate while resigning. This transaction has
+    // already validated the editor; other focus notifications remain live.
+    struct Validation {MacControl&control;explicit Validation(MacControl&value):control(value){++control.editValidationSuppression;}~Validation(){--control.editValidationSuppression;}} validation(*child);
+    accepted=[window makeFirstResponder:nativeFocusView(c)];
+  }
+  c.host->check();
+  if(auto result=state();result!=TabFocusResult::Ready)return result;
+  if(!accepted){if(editing&&!child->disposed)nativeEditSelect(*child,selection);return TabFocusResult::Veto;}
+  return TabFocusResult::Ready;
+}
 }
 
 void validateNativeSegmentItems(const MacControl&c,const std::vector<std::shared_ptr<MacItem>>&items,const std::map<MacItem*,std::map<std::string,Value>>&overrides) {
@@ -145,16 +172,7 @@ bool nativeTabShouldSelect(MacControl&c,NSTabViewItem*item) {
   auto tabs=(NSTabView*)c.widget;auto index=[tabs indexOfTabViewItem:item];auto collection=c.items("tabs");
   if(index<0||size_t(index)>=collection->items.size())return false;
   auto model=collection->items[size_t(index)];if(!itemFlag(*model,"enabled")||!itemFlag(*model,"visible"))return false;
-  if(auto child=focusedChild(c,tabs.selectedTabViewItem.view)) {
-    NSRange selection=NSMakeRange(0,0);
-    if(isNativeEdit(*child)) {
-      auto editor=[child->widget isKindOfClass:NSTextView.class]?(NSTextView*)child->widget:[child->widget isKindOfClass:NSTextField.class]?(NSTextView*)((NSTextField*)child->widget).currentEditor:nil;
-      if(editor.hasMarkedText)return false;
-      selection=nativeEditSelection(*child);
-    }
-    if(![c.view.window makeFirstResponder:nativeFocusView(c)]){if(!child->disposed&&isNativeEdit(*child))nativeEditSelect(*child,selection);return false;}
-    c.host->check();
-  }
+  if(handoffTabFocus(c,tabs,item)!=TabFocusResult::Ready)return false;
   if(c.disposed||c.widget!=tabs||!c.flag("enabled",true))return false;
   index=[tabs indexOfTabViewItem:item];
   if(index==NSNotFound||index<0||size_t(index)>=collection->items.size())return false;
@@ -171,16 +189,9 @@ void selectNativeTab(MacControl&c,int64_t index) {
   auto target=[tabs tabViewItemAtIndex:NSInteger(index)];if(target==tabs.selectedTabViewItem)return;
   // Programmatic selection may address a disabled/hidden page, just like the
   // VB Tab property. It must still preserve validation and marked text.
-  if(auto child=focusedChild(c,tabs.selectedTabViewItem.view)) {
-    NSRange selection=NSMakeRange(0,0);
-    if(isNativeEdit(*child)) {
-      auto editor=[child->widget isKindOfClass:NSTextView.class]?(NSTextView*)child->widget:[child->widget isKindOfClass:NSTextField.class]?(NSTextView*)((NSTextField*)child->widget).currentEditor:nil;
-      if(editor.hasMarkedText)fail(380,"Cannot change pages during marked text composition");
-      selection=nativeEditSelection(*child);
-    }
-    if(![c.view.window makeFirstResponder:nativeFocusView(c)]){if(!child->disposed&&isNativeEdit(*child))nativeEditSelect(*child,selection);fail(380,"The current editor rejected the page change");}
-    c.host->check();
-  }
+  const auto focus=handoffTabFocus(c,tabs,target);
+  if(focus==TabFocusResult::Composition)fail(380,"Cannot change pages during marked text composition");
+  if(focus==TabFocusResult::Veto)fail(380,"The current editor rejected the page change");
   if(c.disposed||c.widget!=tabs)fail(91,"The tab control was disposed during focus validation");
   auto currentIndex=[tabs indexOfTabViewItem:target];if(currentIndex==NSNotFound)fail(380,"The destination tab was removed during focus validation");index=currentIndex;
   const auto previous=c.number("tab",0);{Mutation mutation(c);[tabs selectTabViewItem:target];}
