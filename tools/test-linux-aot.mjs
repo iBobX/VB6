@@ -17,6 +17,7 @@ import {buildLinuxAOTTemplate,linuxNativeTool,verifyLinuxAOTExecutionSysroot} fr
 import {checkLinuxAOTRuntimeProvenance,readLinuxAOTSourceProvenance} from './linux-aot-provenance.mjs';
 import {linuxTarget} from '../packages/linux-native/src/target.js';
 import {qualifyLinuxPrinters} from '../packages/linux-native/tests/printer-contracts.mjs';
+import {qualifyLinuxDisplays} from '../packages/linux-native/tests/display-contracts.mjs';
 import {qualifyLinuxInstances} from '../packages/linux-native/tests/instance-contracts.mjs';
 import {qualifyLinuxCompiledServices} from '../packages/linux-native/tests/compiled-service-contracts.mjs';
 import {linuxRichTextProject} from '../packages/linux-native/tests/richtext.mjs';
@@ -60,7 +61,7 @@ export async function testLinuxAOT({architecture='x64',toolkit='gtk3',rebuild=fa
   // Isolated Xvfb has neither a GPU nor an accessibility daemon. GTK4's Cairo
   // renderer and test accessibility backend let stderr remain a strict gate.
   // These variables apply only to fixture children, never to exported apps.
-  let emulator,executionPrefix=toolkit==='gtk4'?[await linuxNativeTool('env'),'GDK_DEBUG=gl-disable:vulkan-disable','GSK_RENDERER=cairo','GTK_A11Y=test']:[];
+  let emulator,executionPrefix=toolkit==='gtk4'?[await linuxNativeTool('env'),'GDK_DEBUG=gl-disable:vulkan-disable','GSK_RENDERER=cairo','GTK_A11Y=test']:[await linuxNativeTool('env'),'NO_AT_BRIDGE=1'];
   const execute=async(executable,args=[],{gtk=false,argv0,pageBytes,timeout=60000}={})=>{
     let command=executable,arguments_=args;
     if(pageBytes&&!emulator)throw new Error('Page-size overrides require QEMU execution.');
@@ -134,6 +135,8 @@ export async function testLinuxAOT({architecture='x64',toolkit='gtk3',rebuild=fa
         assert.match(output,/LINUX_RTF_PARSER_OK/);assert.match(output,/LINUX_GTK_RICHTEXT_OK/);
       });
       const prefix=[...executionPrefix];
+      await nativeFixture('displayBackends','gtk-display-contracts.cpp',async executable=>qualifyLinuxDisplays(executable,{prefix,emulated:!!emulator}));
+      report.checks.push('Native GTK forms, rich documents and timer lifetime passed actual X11/Openbox and Wayland/Weston display boundaries');
       const services=await nativeFixture('printers','gtk-services-contracts.cpp',async executable=>qualifyLinuxPrinters(executable,{prefix,printPrefix:[await linuxNativeTool('xvfb-run'),'-a'],emulated:!!emulator}));
       const instances=await qualifyLinuxInstances(services.executable,{prefix});
       report.nativeFixtures.previousInstance={...services.evidence,qualification:instances};
