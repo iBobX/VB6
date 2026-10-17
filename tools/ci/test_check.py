@@ -89,6 +89,8 @@ class WorkflowAuditTests(unittest.TestCase):
         self.reject(lambda w:[s.pop('env') for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
     def test_linux_flatpak_portal_cannot_use_another_installation(self):
         self.reject(lambda w:[s['env'].update({'FLATPAK_USER_DIR':'${{ runner.temp }}/other-flatpak'}) for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
+    def test_linux_iso_data_probe_requires_private_mount_setup_on_hosted_runner(self):
+        self.reject(lambda w:[s.update({'run':s['run'].replace(' --iso-mount-namespace privileged','')}) for s in w['jobs']['linux-native-distribution']['steps'] if 'tools/test-linux-native-distribution.mjs' in s.get('run','')])
     def test_linux_arm64_execution_cannot_be_removed(self):
         self.reject(lambda w:w['jobs']['linux']['strategy']['matrix']['architecture'].remove('arm64'))
     def test_linux_browser_arm64_execution_cannot_be_removed(self):

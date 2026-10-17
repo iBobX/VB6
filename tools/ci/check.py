@@ -130,7 +130,7 @@ def audit(root=ROOT):
     distribution = jobs['linux-native-distribution']
     if set(distribution['strategy']['matrix'].get('toolkit', [])) != {'gtk3', 'gtk4'} or distribution.get('env', {}).get('TOOLKIT') != '${{ matrix.toolkit }}':
         raise ValueError('Native distribution must execute both GTK toolkits')
-    distribution_command = 'dbus-run-session -- xvfb-run -a node tools/test-linux-native-distribution.mjs --architecture "$ARCHITECTURE" --toolkit "$TOOLKIT" --flatpak-user-dir "$RUNNER_TEMP/vb6-flatpak" --report reports/linux-native-distribution'
+    distribution_command = 'dbus-run-session -- xvfb-run -a node tools/test-linux-native-distribution.mjs --architecture "$ARCHITECTURE" --toolkit "$TOOLKIT" --flatpak-user-dir "$RUNNER_TEMP/vb6-flatpak" --iso-mount-namespace privileged --report reports/linux-native-distribution'
     if not any(step.get('run') == distribution_command and 'if' not in step for step in distribution['steps']):
         raise ValueError('Native AppImage and sandboxed Flatpak execution, GTK, instances and signing must be mandatory')
     # The session daemon launches Flatpak's portal on demand. Its inherited
