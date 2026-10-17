@@ -77,7 +77,7 @@ GtkWidget* GtkControl::editor() const {
 Text GtkControl::editText() const {
   auto* edit=editor();
   if(GTK_IS_ENTRY(edit))return fromUTF8(gtk_entry_get_text(GTK_ENTRY(edit)));
-  if(GTK_IS_TEXT_VIEW(edit)) {auto* buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(edit));GtkTextIter first,last;gtk_text_buffer_get_bounds(buffer,&first,&last);auto* text=gtk_text_buffer_get_text(buffer,&first,&last,TRUE);auto value=fromUTF8(text);g_free(text);return value;}
+  if(GTK_IS_TEXT_VIEW(edit)) {auto* buffer=gtk_text_view_get_buffer(GTK_TEXT_VIEW(edit));GtkTextIter first,last;gtk_text_buffer_get_bounds(buffer,&first,&last);auto* text=richText?gtk_text_buffer_get_slice(buffer,&first,&last,TRUE):gtk_text_buffer_get_text(buffer,&first,&last,TRUE);auto value=fromUTF8(text);g_free(text);return value;}
   return property("text",Value::string(u"")).string();
 }
 std::pair<size_t,size_t> GtkControl::editSelection() const {
