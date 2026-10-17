@@ -144,20 +144,23 @@ async function appimageBundle(context) {
   const appdir=path.join(work,'AppDir'),image=path.join(work,'filesystem.squashfs'),output=path.join(work,'application.AppImage'),verified=path.join(work,'verified');
   await fs.mkdir(appdir);const prefix='usr/lib/'+metadata.packageName+'/';await addApplication(appdir,files,compiler,prefix);
   const dependencies=await bundleAppImageDependencies({appdir,executable:path.join(appdir,prefix,'bin',compiler.name),compiler,toolchain,signal});
+  const generated=[];
+  const addGenerated=async(relative,bytes,mode=0o644)=>{await writePackageFile(appdir,relative,bytes,mode);generated.push({path:relative,sha256:hash(bytes),mode});};
   const launcher=appimageLauncher(compiler,metadata,dependencies);
-  await writePackageFile(appdir,'AppRun',launcher,0o755);
-  await writePackageFile(appdir,metadata.packageName+'.desktop',desktop(compiler,metadata,metadata.packageName,metadata.packageName));
-  await writePackageFile(appdir,metadata.packageName+'.svg',icon);
-  await writePackageFile(appdir,'.DirIcon',icon);
-  await writePackageFile(appdir,'usr/share/applications/'+metadata.packageName+'.desktop',desktop(compiler,metadata,metadata.packageName,metadata.packageName));
-  await writePackageFile(appdir,'usr/share/icons/hicolor/scalable/apps/'+metadata.packageName+'.svg',icon);
+  await addGenerated('AppRun',launcher,0o755);
+  await addGenerated('usr/bin/'+metadata.packageName,'#!/bin/sh\nappdir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P) || exit 1\nexec "$appdir/AppRun" "$@"\n',0o755);
+  await addGenerated(metadata.packageName+'.desktop',desktop(compiler,metadata,metadata.packageName,metadata.packageName));
+  await addGenerated(metadata.packageName+'.svg',icon);
+  await addGenerated('.DirIcon',icon);
+  await addGenerated('usr/share/applications/'+metadata.packageName+'.desktop',desktop(compiler,metadata,metadata.packageName,metadata.packageName));
+  await addGenerated('usr/share/icons/hicolor/scalable/apps/'+metadata.packageName+'.svg',icon);
   const runtimeLicense=toolchain.appimageRuntimeLicense?new TextDecoder('utf-8',{fatal:true}).decode(await readPackageFile(toolchain.appimageRuntimeLicense,4*1024*1024)):APPIMAGE_RUNTIME_LICENSE;
-  await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/appimage-runtime-license.txt',runtimeLicense+'\nPinned source: '+runtime.manifest.source+'\nRelease: '+runtime.manifest.release+'\n');
-  if(dependencies.dataRelocations.length)await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/gtk-data-relocations.txt',appImageGtkDataNotice(dependencies.dataRelocations));
+  await addGenerated('usr/share/vb6/'+metadata.packageName+'/appimage-runtime-license.txt',runtimeLicense+'\nPinned source: '+runtime.manifest.source+'\nRelease: '+runtime.manifest.release+'\n');
+  if(dependencies.dataRelocations.length)await addGenerated('usr/share/vb6/'+metadata.packageName+'/gtk-data-relocations.txt',appImageGtkDataNotice(dependencies.dataRelocations));
   const provenance={version:1,format:'appimage',applicationSha256,executableSha256:report.executableSha256,appimageRuntime:runtime.manifest,tools:versions,
     minimumGlibc:dependencies.minimumGlibc,bundledLibraries:dependencies.libraries,externalLibraries:dependencies.externalLibraries,licenseFiles:dependencies.licenseFiles,
     dependencyFiles:dependencies.files,dataRelocations:dependencies.dataRelocations};
-  await writePackageFile(appdir,'usr/share/vb6/'+metadata.packageName+'/distribution.json',json(provenance));
+  await addGenerated('usr/share/vb6/'+metadata.packageName+'/distribution.json',json(provenance));
   await runPackagingTool(mksquashfs,[appdir,image,'-noappend','-all-root','-no-xattrs','-no-exports','-no-progress','-comp','gzip','-b','131072','-processors','1','-mkfs-time','0','-all-time','0','-root-mode','755'],{...settings,env:{SOURCE_DATE_EPOCH:undefined}});
   const filesystem=await readPackageFile(image),bytes=Buffer.concat([runtime.bytes,filesystem]);
   if(filesystem.length<96||filesystem.readUInt32LE(0)!==0x73717368||filesystem.readUInt16LE(28)!==4)throw new Error('mksquashfs did not produce a SquashFS 4 filesystem');
@@ -165,7 +168,7 @@ async function appimageBundle(context) {
   await runPackagingTool(unsquashfs,['-no-progress','-processors','1','-offset',String(runtime.bytes.length),'-d',verified,output],settings);
   const expected=[];
   for(const [name,value]of files)expected.push({path:prefix+name.slice(compiler.name.length+1),sha256:hash(value),mode:name===compiler.name+'/bin/'+compiler.name?0o755:0o644});
-  expected.push(...dependencies.files,{path:'AppRun',sha256:hash(launcher),mode:0o755});
+  expected.push(...dependencies.files,...generated);
   for(const item of expected){
     signal?.throwIfAborted();const location=path.join(verified,...item.path.split('/')),info=await fs.lstat(location);
     if(!info.isFile()||(info.mode&0o777)!==item.mode||hash(await readPackageFile(location,128*1024*1024))!==item.sha256)throw new Error('AppImage independent extraction verification failed: '+item.path);

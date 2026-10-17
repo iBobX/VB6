@@ -1,9 +1,11 @@
 /** Offline, architecture-checked upstream AppImage execution header. */
 import {gunzipSync} from 'node:zlib';
 import {createHash} from 'node:crypto';
-import {APPIMAGE_RUNTIME_RELEASE,APPIMAGE_RUNTIME_SOURCE,APPIMAGE_RUNTIME_LICENSE,APPIMAGE_RUNTIME_PAYLOADS} from './appimage-runtime-payload.mjs';
+import {APPIMAGE_RUNTIME_RELEASE,APPIMAGE_RUNTIME_SOURCE,APPIMAGE_RUNTIME_LICENSE as APPIMAGE_CORE_LICENSE,APPIMAGE_RUNTIME_PAYLOADS} from './appimage-runtime-payload.mjs';
+import {APPIMAGE_THIRD_PARTY_NOTICES,APPIMAGE_RUNTIME_LICENSE_SOURCES} from './appimage-runtime-notices.mjs';
 import {readPackageFile} from './native-distribution-tools.mjs';
-export {APPIMAGE_RUNTIME_RELEASE,APPIMAGE_RUNTIME_SOURCE,APPIMAGE_RUNTIME_LICENSE};
+export {APPIMAGE_RUNTIME_RELEASE,APPIMAGE_RUNTIME_SOURCE};
+export const APPIMAGE_RUNTIME_LICENSE=APPIMAGE_CORE_LICENSE+'\n\n'+APPIMAGE_THIRD_PARTY_NOTICES;
 
 export function inspectAppImageRuntime(bytes,architecture) {
   if(bytes instanceof Uint8Array&&!Buffer.isBuffer(bytes))bytes=Buffer.from(bytes.buffer,bytes.byteOffset,bytes.byteLength);
@@ -31,5 +33,5 @@ export async function loadAppImageRuntime(architecture,{runtimePath,runtimeSha25
   }
   const manifest=inspectAppImageRuntime(bytes,architecture);
   if(manifest.sha256!==runtimeSha256)throw new Error('AppImage runtime SHA256 mismatch');
-  return {bytes,manifest:{...manifest,release,source,license:release==='custom'?'caller-supplied':'MIT; LGPL-2.1-or-later; BSD-2-Clause; Zlib'}};
+  return {bytes,manifest:{...manifest,release,source,license:release==='custom'?'caller-supplied':'MIT; LGPL-2.1-or-later; BSD-2-Clause; Zlib',...(release==='custom'?{}:{licenseSources:APPIMAGE_RUNTIME_LICENSE_SOURCES})}};
 }
