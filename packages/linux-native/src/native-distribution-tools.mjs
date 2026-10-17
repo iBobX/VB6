@@ -16,10 +16,20 @@ export async function readPackageFile(filename,limit=512*1024*1024) {
 }
 export async function writePackageFile(root,relative,bytes,mode=0o644) {
   if(typeof relative!=='string'||!relative||relative.length>4096||/[\\\x00-\x1f\x7f]/.test(relative)||relative.split('/').some(part=>!part||part==='.'||part==='..'||Buffer.byteLength(part)>255))throw new Error('Invalid native package path');
-  const destination=path.join(root,...relative.split('/'));
-  await fs.mkdir(path.dirname(destination),{recursive:true,mode:0o755});
+  const parts=relative.split('/'),destination=path.join(root,...parts);let directory=root;
+  for(const part of parts.slice(0,-1)){
+    directory=path.join(directory,part);
+    try {await fs.mkdir(directory,{mode:0o755});await fs.chmod(directory,0o755);}
+    catch(error){
+      if(error.code!=='EEXIST')throw error;
+      const existing=await fs.lstat(directory);
+      if(!existing.isDirectory()||existing.isSymbolicLink())throw new Error('Native package directory must not be a link or non-directory: '+directory);
+    }
+  }
   const file=await fs.open(destination,'wx',mode);
-  try {await file.writeFile(bytes);}finally {await file.close();}
+  // Package metadata records these exact modes. The user's umask controls the
+  // final output's privacy, but cannot change the redistributable staged tree.
+  try {await file.chmod(mode);await file.writeFile(bytes);}finally {await file.close();}
   return destination;
 }
 export function runPackagingTool(command,args,{cwd,signal,env={},timeout=300000,maxOutput=4*1024*1024,successCodes=[0]}={}) {
@@ -28,12 +38,18 @@ export function runPackagingTool(command,args,{cwd,signal,env={},timeout=300000,
   return new Promise((resolve,reject)=>{
     const ownGroup=process.platform!=='win32';
     const child=spawn(command,args,{cwd,env:{...process.env,...env,LC_ALL:'C',LANG:'C'},stdio:['ignore','pipe','pipe'],shell:false,detached:ownGroup});
-    let stdout=[],stderr=[],length=0,failure,timer,killTimer,settled=false;
+    let stdout=[],stderr=[],length=0,failure,timer,killTimer,settled=false,killSent=false,pendingClose;
     const terminate=kind=>{
       if(ownGroup&&child.pid){try{process.kill(-child.pid,kind);}catch(error){if(error.code!=='ESRCH')child.kill(kind);}}
       else child.kill(kind);
     };
-    const stop=error=>{failure??=error;terminate('SIGTERM');killTimer??=setTimeout(()=>terminate('SIGKILL'),2000);killTimer.unref();};
+    const stop=error=>{
+      failure??=error;terminate('SIGTERM');
+      if(!killTimer&&!killSent)killTimer=setTimeout(()=>{
+        killSent=true;terminate('SIGKILL');
+        if(pendingClose)finish(pendingClose.error,pendingClose.value);
+      },2000);
+    };
     const abort=()=>stop(signal.reason??new DOMException('Native packaging cancelled','AbortError'));
     const finish=(error,value)=>{
       if(settled)return;settled=true;clearTimeout(timer);clearTimeout(killTimer);signal?.removeEventListener('abort',abort);
@@ -47,7 +63,15 @@ export function runPackagingTool(command,args,{cwd,signal,env={},timeout=300000,
     child.on('error',error=>finish(error.code==='ENOENT'?new Error('Required native packaging tool was not found: '+command,{cause:error}):error));
     child.on('close',(code,termination)=>{
       const out=Buffer.concat(stdout).toString('utf8'),err=Buffer.concat(stderr).toString('utf8');
-      finish(failure??(successCodes.includes(code)?null:new Error(path.basename(command)+' failed ('+(termination??code)+'): '+(err.trim()||out.trim()).slice(-12000))),{stdout:out,stderr:err});
+      const error=failure??(successCodes.includes(code)?null:new Error(path.basename(command)+' failed ('+(termination??code)+'): '+(err.trim()||out.trim()).slice(-12000))),value={stdout:out,stderr:err};
+      if(failure&&ownGroup&&child.pid&&!killSent&&killTimer){
+        // A leader can exit and close its pipes while a detached-output child
+        // ignores SIGTERM. Keep the owned group's kill deadline alive before
+        // settling cancellation and deleting its private workspace.
+        try {process.kill(-child.pid,0);pendingClose={error,value};return;}
+        catch(probe){if(probe.code!=='ESRCH'){pendingClose={error,value};return;}}
+      }
+      finish(error,value);
     });
   });
 }

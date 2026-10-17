@@ -101,12 +101,48 @@ test('native packaging cancellation terminates owned descendants that ignore SIG
   try {assert.match(await fs.readFile('/proc/'+child+'/status','utf8'),/^State:\s+Z\b/m,'Cancelled descendant is not running');}
   catch(error){if(error.code!=='ENOENT')throw error;}
 });
+test('native packaging cancellation also terminates descendants after the leader closes its pipes',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux process-group and /proc semantics');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-package-orphan-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const pidFile=path.join(directory,'descendant.pid'),controller=new AbortController();
+  const pending=runPackagingTool('/bin/sh',['-c',
+    '/bin/sh -c \'trap "" TERM; printf "%s\\n" "$$" > "$1"; while :; do /bin/sleep 30; done\' vb6-orphan-fixture "$1" >/dev/null 2>&1 & wait',
+    'vb6-parent-fixture',pidFile],{signal:controller.signal,timeout:10000});
+  const rejected=assert.rejects(pending,{name:'AbortError'});let child,problem;
+  try {
+    for(let attempt=0;attempt<200;attempt++){
+      try {child=Number((await fs.readFile(pidFile,'utf8')).trim());break;}catch(error){if(error.code!=='ENOENT')throw error;await new Promise(resolve=>setTimeout(resolve,10));}
+    }
+    assert.ok(Number.isInteger(child)&&child>0,'Redirected descendant started');
+  }catch(error){problem=error;}
+  finally {controller.abort();await rejected;}
+  if(problem)throw problem;
+  try {assert.match(await fs.readFile('/proc/'+child+'/status','utf8'),/^State:\s+Z\b/m,'Redirected descendant is not running after cancellation settles');}
+  catch(error){if(error.code!=='ENOENT')throw error;}
+});
 test('native package writers reject path traversal and preserve reserved outputs',async t=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-native-writer-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
   await assert.rejects(writePackageFile(directory,'../escape','bad'),/Invalid native package path/);
   await writePackageFile(directory,'files/app','first');await assert.rejects(writePackageFile(directory,'files/app','second'),error=>error.code==='EEXIST');
   assert.equal((await readPackageFile(path.join(directory,'files/app'))).toString(),'first');
   await assert.rejects(readPackageFile(path.join(directory,'files/app'),2),/bounded regular/);
+  if(process.platform!=='win32'){
+    const outside=path.join(directory,'outside');await fs.mkdir(outside);await fs.symlink(outside,path.join(directory,'linked'));
+    await assert.rejects(writePackageFile(directory,'linked/escape','bad'),/must not be a link/);
+    await assert.rejects(fs.stat(path.join(outside,'escape')),error=>error.code==='ENOENT');
+  }
+});
+test('native package staging preserves exact modes under a restrictive user umask',async t=>{
+  if(process.platform==='win32'){t.skip('POSIX file permission semantics');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-package-umask-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const helper=new URL('../packages/linux-native/src/native-distribution-tools.mjs',import.meta.url).href;
+  const script=path.join(directory,'fixture.mjs');
+  await fs.writeFile(script,'import {writePackageFile} from '+JSON.stringify(helper)+';\nprocess.umask(0o077);\nawait writePackageFile(process.argv[2],"usr/bin/application","executable",0o755);\nawait writePackageFile(process.argv[2],"usr/share/data.txt","resource",0o644);\n');
+  // A child fixture changes only its own umask. Node's test-runner context is
+  // cleared only for this ordinary Node subprocess, not in production globals.
+  await runPackagingTool(process.execPath,[script,directory],{env:{NODE_TEST_CONTEXT:undefined}});
+  for(const name of ['usr','usr/bin','usr/share','usr/bin/application'])assert.equal((await fs.stat(path.join(directory,name))).mode&0o777,0o755,name);
+  assert.equal((await fs.stat(path.join(directory,'usr/share/data.txt'))).mode&0o777,0o644);
 });
 test('native package validation rejects damage and cancellation before invoking tools',async()=>{
   const app=await exportLinuxApplication(project),bad=app.bytes.slice();bad[0]^=1;
@@ -119,6 +155,13 @@ test('native package validation rejects damage and cancellation before invoking 
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'flatpak',appId:'invalid'}}),/reverse-DNS/);
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'zip',appId:'org.example.Test'}}),/require flatpak/);
   await assert.rejects(exportLinuxProject(null,{distribution:{format:'zip'},toolchain:{flatpak:'bad'}}),/require appimage or flatpak/);
+});
+test('native packaging resolves explicit relative tool paths from the caller directory',async t=>{
+  if(process.platform!=='linux'){t.skip('Linux native package host');return;}
+  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'linux-relative-tool-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+  const tool=path.join(directory,'flatpak');await fs.writeFile(tool,'#!/bin/sh\nprintf "%s\\n" "RELATIVE_TOOL_WAS_EXECUTED" >&2\nexit 71\n',{mode:0o755});
+  const application=await exportLinuxApplication(project);
+  await assert.rejects(packageLinuxApplicationNative(application,{format:'flatpak'},{toolchain:{flatpak:path.relative(process.cwd(),tool)}}),/flatpak failed \(71\): RELATIVE_TOOL_WAS_EXECUTED/);
 });
 test('AppImage dependency traversal rejects a library from another architecture',async t=>{
   if(process.platform!=='linux'){t.skip('Linux ELF dependency reader');return;}

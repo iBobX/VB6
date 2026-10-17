@@ -55,7 +55,12 @@ function nativeToolchain(value,format,architecture) {
   if(value.appimageRuntime&&!value.appimageRuntimeLicense)throw new Error('A custom AppImage runtime requires appimageRuntimeLicense');
   if(value.appimageRuntimeLicense&&!value.appimageRuntime)throw new Error('appimageRuntimeLicense requires appimageRuntime');
   if(format==='appimage'&&!value.sysroot&&architecture!==(process.arch==='arm64'?'arm64':process.arch==='x64'?'x64':'unsupported'))throw new Error('Cross-architecture AppImage packaging requires an explicit target sysroot');
-  return {...value};
+  const normalized={...value};
+  // Tool subprocesses run inside a private staging directory. Explicit relative
+  // executable paths refer to the caller's working directory, like data paths;
+  // bare command names continue to use PATH.
+  for(const key of ['readelf','mksquashfs','unsquashfs','flatpak','ostree'])if(normalized[key]?.includes(path.sep))normalized[key]=path.resolve(normalized[key]);
+  return normalized;
 }
 async function addApplication(root,files,compiler,prefix) {
   const appRoot=compiler.name+'/';
