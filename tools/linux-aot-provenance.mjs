@@ -34,14 +34,14 @@ export function linuxAOTExecutionVerification(proof,manifest) {
   const toolkit=manifest.toolkit??'gtk3',target=linuxTarget(manifest.architecture,toolkit),native=proof?.executionMode==='native',emulated=proof?.executionMode==='qemu-user';
   const features=['machineCodeExecutionVerified',target.option+'ExecutionVerified','gtkExecutionVerified','gtkNativeSignalsVerified','conformanceVerified','resourcesVerified','lifetimeVerified','codeMetadataGrowthVerified','richTextVerified','printerServicesVerified','previousInstanceVerified'];
   const evidence=['language-O0','language-O1','language-O2','language-O3','abi-platform-O0','abi-platform-O1','abi-platform-O2','abi-platform-O3','resource-path-O2','program-roots-O2','abrupt-End-O2','form-lifetime-O2','large-O2','gtk-controls-O2','richtext-O2','compiled-printers-O3','compiled-instance-O3'];
-  const nativeFixtures=['gtkSignals','richText','printers','previousInstance'];
+  const nativeFixtures=['gtkSignals','richText','displayBackends','printers','previousInstance'];
   const validEvidence=value=>value?.runtimeSha256===manifest.sha256&&value.architecture===target.architecture&&value.machine===target.machine&&value.callingConvention===target.callingConvention&&/^[a-f0-9]{64}$/.test(value.executableSha256||'');
   if((proof?.toolkit??'gtk3')!==toolkit||proof?.error||proof?.platform!=='linux'||proof?.arch!==target.option||proof?.architecture!==target.architecture||proof?.runtime?.sha256!==manifest.sha256||
       !features.every(name=>proof?.[name]===true)||JSON.stringify(proof?.optimizationLevelsVerified)!=='[0,1,2,3]'||
       !(native&&proof.hostArchitecture===target.option||emulated&&['x64','arm64'].includes(proof.hostArchitecture)&&proof.hostArchitecture!==target.option&&/qemu/i.test(proof.emulatorVersion||''))||
       !evidence.every(name=>validEvidence(proof?.[name]))||!nativeFixtures.every(name=>proof?.nativeFixtures?.[name]?.passed===true&&validEvidence(proof.nativeFixtures[name]))||proof?.compiledServices?.passed!==true||
       emulated&&target.option==='arm64'&&(JSON.stringify(proof.emulatedPageSizesVerified)!=='[4096,16384,65536]'||![4096,16384,65536].every(size=>proof.emulatedPageCases?.[size]?.pageBytes===size&&validEvidence(proof.emulatedPageCases[size])&&proof.emulatedPageCases[size].executableSha256===proof['resource-path-O2'].executableSha256)))
-    throw new Error('Embedding requires exact-runtime Linux '+target.option+' machine-code execution, GTK, rich text, printer services, previous-instance, conformance, resource, lifetime, large-project and O0..O3 proof.');
+    throw new Error('Embedding requires exact-runtime Linux '+target.option+' machine-code execution, GTK, rich text, X11 and Wayland display backends, printer services, previous-instance, conformance, resource, lifetime, large-project and O0..O3 proof.');
   return {platform:'linux',toolkit,architecture:target.architecture,executionMode:proof.executionMode,hostArchitecture:proof.hostArchitecture,
     ...(emulated?{emulatorVersion:proof.emulatorVersion,...(target.option==='arm64'?{emulatedPageSizesVerified:[4096,16384,65536]}:{})}:{}),...Object.fromEntries(features.map(name=>[name,true])),optimizationLevelsVerified:[0,1,2,3],
     nativeFixtureSha256:Object.fromEntries(nativeFixtures.map(name=>[name,proof.nativeFixtures[name].executableSha256])),
@@ -57,7 +57,8 @@ export function checkLinuxAOTRuntimeProvenance(sourceRoot=root,{architecture='x6
       !(verification.executionMode==='native'&&verification.hostArchitecture===target.option||verification.executionMode==='qemu-user'&&['x64','arm64'].includes(verification.hostArchitecture)&&verification.hostArchitecture!==target.option&&/qemu/i.test(verification.emulatorVersion||''))||
       verification.executionMode==='qemu-user'&&target.option==='arm64'&&JSON.stringify(verification.emulatedPageSizesVerified)!=='[4096,16384,65536]'||
       !['machineCodeExecutionVerified',target.option+'ExecutionVerified','gtkExecutionVerified','gtkNativeSignalsVerified','conformanceVerified','resourcesVerified','lifetimeVerified','codeMetadataGrowthVerified','richTextVerified','printerServicesVerified','previousInstanceVerified'].every(name=>verification?.[name]===true)||
-      JSON.stringify(verification?.optimizationLevelsVerified)!=='[0,1,2,3]')
+      JSON.stringify(verification?.optimizationLevelsVerified)!=='[0,1,2,3]'||
+      !['gtkSignals','richText','displayBackends','printers','previousInstance'].every(name=>/^[a-f0-9]{64}$/.test(verification?.nativeFixtureSha256?.[name]||'')))
     throw new Error('Linux AOT runtime lacks native execution provenance.');
   for(const [name,value]of Object.entries(readLinuxAOTSourceProvenance(sourceRoot)))
     if(manifest.provenance?.[name]!==value)throw new Error('Linux AOT runtime is stale: '+name+'. Rebuild, validate and embed the runtime.');
