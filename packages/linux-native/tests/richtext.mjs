@@ -108,7 +108,7 @@ Private Sub LinuxStructuredRTF()
   Debug.Assert Editor.TextRTF = document
   Kill "linux-richtext-image.rtf"
   Editor.TextRTF = "{\rtf1{\trowd\trgaph60\cellx1440\cellx2880\b Left\cell\b0 Right\cell\row}after}"
-  Debug.Assert Editor.Text = ChrW(-4) & ChrW(8232) & "after"
+  Debug.Assert Editor.Text = ChrW(-4) & vbLf & "after"
   document = Editor.TextRTF
   Editor.Text = ""
   Editor.TextRTF = document
@@ -137,7 +137,59 @@ Private Sub LinuxStructuredRTF()
   Debug.Assert InStr(Editor.TextRTF, "cached") > 0
   Debug.Assert InStr(Editor.TextRTF, "\objdata 0102") > 0
   Kill "linux-richtext-objects.rtf"
+  LinuxListRTF
   Debug.Print "LINUX_RICH_DOCUMENTS_OK"
+End Sub
+
+Private Sub LinuxListRTF()
+  Dim header As String, document As String, selected As String, priorModified As Boolean
+  header = "{\rtf1\deff0{\fonttbl{\f0 Sans;}{\f1 Serif;}}{\colortbl;\red255\green0\blue0;}{\*\listtable{\list\listhybrid{\listlevel\levelnfc1\levelstartat4\leveljc2{\leveltext\'02\'00.;}{\levelnumbers\'01;}\f1\fs28\b\cf1\li720\fi-360\tx720}{\listlevel\levelnfc0\levelstartat2\levellegal1{\leveltext\'04\'00.\'01);}{\levelnumbers\'01\'03;}\li1440\fi-360\tx1440}\listid11}}{\*\listoverridetable{\listoverride\listid11\listoverridecount0\ls1}}"
+  Editor.TextRTF = header & "\ls1 First\par\ilvl1 Child\par\ilvl0 Second\par\ilvl1 Reset}"
+  Debug.Assert Editor.Text = "First" & vbLf & "Child" & vbLf & "Second" & vbLf & "Reset"
+  document = Editor.TextRTF
+  Debug.Assert InStr(document, "\u73?\u86?\u46?") > 0
+  Debug.Assert InStr(document, "\u52?\u46?\u50?\u41?") > 0
+  Debug.Assert InStr(document, "\u53?\u46?\u50?\u41?") > 0
+  Debug.Assert InStr(document, "\pnfs28") > 0
+  Debug.Assert InStr(document, "\pnqr") > 0
+  Editor.SelStart = 0
+  Editor.SelLength = 5
+  Debug.Assert Editor.SelIndent = 360
+  Debug.Assert Editor.SelHangingIndent = 360
+  selected = Editor.SelRTF
+  Editor.SaveFile "linux-richtext-lists.rtf"
+  Editor.Text = ""
+  Editor.LoadFile "linux-richtext-lists.rtf"
+  Debug.Assert Editor.TextRTF = document
+  Kill "linux-richtext-lists.rtf"
+  Editor.SelStart = 0
+  Editor.SelLength = 5
+  priorModified = Editor.Modified
+  On Error Resume Next
+  Editor.TextRTF = Replace(header, "\levelnfc1", "\levelnfc1\levelfollow1") & "\ls1 Rejected}"
+  Debug.Assert Err.Number = 453
+  Err.Clear
+  Editor.SelRTF = header & "\ls1\ilvl8 Rejected}"
+  Debug.Assert Err.Number = 380
+  Err.Clear
+  Editor.TextRTF = "{\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0\'e6}"
+  Debug.Assert Err.Number = 453
+  Err.Clear
+  On Error GoTo 0
+  Debug.Assert Editor.TextRTF = document
+  Debug.Assert Editor.SelStart = 0
+  Debug.Assert Editor.SelLength = 5
+  Debug.Assert Editor.Modified = priorModified
+  Editor.Text = ""
+  Editor.SelRTF = selected
+  Debug.Assert Editor.Text = "First"
+  Debug.Assert InStr(Editor.TextRTF, "\u73?\u86?\u46?") > 0
+  Editor.TextRTF = "{\rtf1{\fonttbl{\f0\fcharset2 Symbol;}}\f0 ABab\'b7\'a5\'e5\\\u92?}"
+  Debug.Assert Editor.Text = ChrW(&H391) & ChrW(&H392) & ChrW(&H3B1) & ChrW(&H3B2) & ChrW(&H2022) & ChrW(&H221E) & ChrW(&H2211) & ChrW(&H2234) & "\"
+  document = Editor.TextRTF
+  Editor.TextRTF = document
+  Debug.Assert Editor.TextRTF = document
+  Debug.Print "LINUX_RICH_LISTS_OK"
 End Sub`;
   return project;
 }

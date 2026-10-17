@@ -224,6 +224,7 @@ class Reader {
   bool header=false,finished=false;
   size_t documentDepth=0;
   std::optional<Token> pendingClose;
+  std::optional<std::pair<size_t,size_t>> pictureFallback;
   struct TableContext {
     GtkRtfDocument outer;
     size_t paragraphFirst=0,complete=0;
@@ -303,6 +304,12 @@ class Reader {
     else unsupported("levelnfc"+std::to_string(type));
     return level;
   }
+  static void validateListLevels(const std::vector<ListLevel>& levels) {
+    for(size_t i=0;i<levels.size();++i)for(auto value:levels[i].pattern)if(value<9) {
+      if(size_t(value)>i)invalid("list marker refers to a deeper or undefined level");
+      if(!levels[size_t(value)].paragraph.numbering)invalid("numeric list marker refers to an unnumbered level");
+    }
+  }
   void listTable(const Token& start) {
     if(!state.first||state.destination!=Destination::Body||!result.text.empty()||!lists.empty())invalid("misplaced list table");
     const auto body=groupBody(start);Lexer parser(body);
@@ -319,7 +326,7 @@ class Reader {
         else if(item.kind==Token::Word&&item.name=="listrestarthdn"){if(!item.parameter||item.number)unsupported(item.name);}
         else unsupported(item.name.empty()?"list definition":item.name);
       }
-      if(!id||!*id||levels.empty()||(simple&&levels.size()!=1)||lists.count(*id))invalid("invalid or duplicate list definition");if(lists.size()>=GtkRtfMaxTable)fail(7,"RTF list table exceeds 4096 entries");lists.emplace(*id,std::move(levels));
+      if(!id||!*id||levels.empty()||(simple&&levels.size()!=1)||lists.count(*id))invalid("invalid or duplicate list definition");validateListLevels(levels);if(lists.size()>=GtkRtfMaxTable)fail(7,"RTF list table exceeds 4096 entries");lists.emplace(*id,std::move(levels));
     }
     state.destination=Destination::Skip;
   }
@@ -347,7 +354,7 @@ class Reader {
       }
       if(!id||!index||!count||!lists.count(*id)||overrides.count(*index)||changes.size()!=size_t(*count))invalid("invalid list override definition");auto levels=lists.at(*id);if(changes.size()>levels.size())invalid("override has more levels than its list");
       for(size_t i=0;i<changes.size();++i){if(changes[i].format)levels[i]=*changes[i].format;if(changes[i].start)levels[i].paragraph.numberStart=*changes[i].start;}
-      if(overrides.size()>=GtkRtfMaxTable)fail(7,"RTF list override table exceeds 4096 entries");overrides.emplace(*index,std::move(levels));
+      validateListLevels(levels);if(overrides.size()>=GtkRtfMaxTable)fail(7,"RTF list override table exceeds 4096 entries");overrides.emplace(*index,std::move(levels));
     }
     state.destination=Destination::Skip;
   }
@@ -374,7 +381,24 @@ class Reader {
   }
   void appendObject(GtkRtfObject object) {
     if(result.objects.size()>=GtkRtfMaxObjects)fail(7,"RTF embedded object limit exceeded");
-    object.first=result.text.size();bodyText(object.kind==GtkRtfObject::Picture?u"\ufffc":u"\ufffc\u2028");object.last=result.text.size();result.objects.push_back(std::move(object));
+    if(object.kind==GtkRtfObject::TableRow&&!result.text.empty()&&!gtkRtfParagraphEnd(result.text,result.text.size()-1))bodyText(u"\n");
+    object.first=result.text.size();bodyText(object.kind==GtkRtfObject::Picture?u"\ufffc":object.kind==GtkRtfObject::TableRow?u"\ufffc\n":u"\ufffc\u2028");object.last=result.text.size();result.objects.push_back(std::move(object));
+  }
+  void pictureAlternative(const Token& start,bool fallback) {
+    if(!state.first||state.destination!=Destination::Body)invalid("misplaced picture alternative");
+    const auto body=groupBody(start);Lexer parser(body);auto token=parser.next();
+    while(token.kind==Token::Bytes&&token.bytes.find_first_not_of(" \t")==std::string_view::npos)token=parser.next();
+    if(token.kind!=Token::Open)invalid("picture alternative must contain one picture");
+    const auto entry=subdestination(parser,body);if(entry.first.name!="pict")invalid("picture alternative has a non-picture result");
+    for(token=parser.next();token.kind!=Token::End;token=parser.next())if(token.kind!=Token::Bytes||token.bytes.find_first_not_of(" \t")!=std::string_view::npos)invalid("picture alternative contains multiple results");
+    const auto identity=std::make_pair(groups.back().groupStart,result.text.size());
+    if(!fallback||!pictureFallback||*pictureFallback!=identity) {
+      auto document=fragment("{\\pict "+entry.second+"}");
+      if(document.objects.size()!=1||document.objects[0].kind!=GtkRtfObject::Picture||document.text!=u"\ufffc")invalid("invalid picture alternative result");
+      appendObject(std::move(document.objects[0]));
+    }
+    if(fallback)pictureFallback.reset();else pictureFallback=std::make_pair(groups.back().groupStart,result.text.size());
+    state.destination=Destination::Skip;
   }
   static std::string binaryHex(const std::string& body) {
     Lexer parser(body);std::string bytes;int high=-1;
@@ -619,8 +643,7 @@ class Reader {
     if(name=="object"){if(!state.first||state.destination!=Destination::Body)invalid("misplaced object");embedded(token);return;}
     static const std::set<std::string> regions={"footnote","endnote","annotation","header","headerl","headerr","headerf","footer","footerl","footerr","footerf"};
     if(regions.count(name)){if(!state.first||state.destination!=Destination::Body)invalid("misplaced page region");region(token);return;}
-    if(name=="shppict"){if(!state.first)invalid("misplaced picture alternative");return;}
-    if(name=="nonshppict"){if(!state.first)invalid("misplaced picture fallback");if(!result.objects.empty()&&result.objects.back().kind==GtkRtfObject::Picture&&result.objects.back().last==result.text.size()){groupBody(token);state.destination=Destination::Skip;}return;}
+    if(name=="shppict"||name=="nonshppict"){pictureAlternative(token,name=="nonshppict");return;}
     if(name=="field") {if(!state.first||state.destination!=Destination::Body)invalid("misplaced field");if(result.fields.size()>=4096)fail(7,"RTF field limit exceeded");state.field=std::make_shared<GtkRtfField>();state.field->first=result.text.size();state.ownsField=true;state.fieldResult=false;state.destination=Destination::Field;return;}
     if(name=="fldinst") {if(!state.first||!state.field||state.destination!=Destination::Field)invalid("misplaced field instruction");state.destination=Destination::FieldInstruction;return;}
     if(name=="fldrslt") {if(!state.first||!state.field||state.destination!=Destination::Field)invalid("misplaced field result");state.destination=Destination::Body;state.fieldResult=true;return;}
@@ -823,7 +846,7 @@ void gtkRtfValidateObjects(const GtkRtfDocument& document) {
     if(doc.fields.size()>GtkRtfMaxTable-fields)fail(7,"Nested RTF fields exceed 4096");fields+=doc.fields.size();if(doc.runs.size()>GtkRtfMaxRuns-runs)fail(7,"Nested RTF formatting exceeds 65536 runs");runs+=doc.runs.size();
     for(const auto& object:doc.objects) {
       if(++count>GtkRtfMaxObjects)fail(7,"RTF embedded object limit exceeded");
-      const auto expected=object.kind==GtkRtfObject::Picture?Text(u"\ufffc"):Text(u"\ufffc\u2028");
+      const auto expected=object.kind==GtkRtfObject::Picture?Text(u"\ufffc"):object.kind==GtkRtfObject::TableRow?Text(u"\ufffc\n"):Text(u"\ufffc\u2028");
       if(object.first<previous||object.first>object.last||object.last>doc.text.size()||doc.text.substr(object.first,object.last-object.first)!=expected)invalid("invalid embedded object range");previous=object.last;
       if(object.bytes.size()>GtkRtfMaxBytes-bytes)fail(7,"Embedded RTF bytes exceed 16 MiB");bytes+=object.bytes.size();
       if(object.kind==GtkRtfObject::Picture) {
@@ -836,6 +859,7 @@ void gtkRtfValidateObjects(const GtkRtfDocument& document) {
       }else if(object.kind==GtkRtfObject::TableRow) {
         if(object.cells.empty()||object.cells.size()>64||object.left< -31680||object.left>31680||object.gap<0||object.gap>15840||object.alignment<0||object.alignment>2||std::abs(int64_t(object.height))>31680)invalid("invalid table row geometry");int right=object.left;
         if(object.left<0||object.height<0)unsupported("table (negative offset or exact clipped row height)");
+        if(object.first&&!gtkRtfParagraphEnd(doc.text,object.first-1))invalid("table row must start an outer paragraph");
         for(size_t i=0;i<object.cells.size();++i){const auto& cell=object.cells[i];if(++cells>GtkRtfMaxTable)fail(7,"RTF table cell limit exceeded");if(cell.right<=right||cell.right>31680||cell.vertical<0||cell.vertical>2||cell.merge<0||cell.merge>2||(!i&&cell.merge==2)||cell.background< -1||cell.background>0xffffff||!cell.content)invalid("invalid table cell");right=cell.right;
           for(const auto& border:cell.borders)if(border.style<0||border.style>4||border.width<0||border.width>720||border.color< -1||border.color>0xffffff)invalid("invalid table cell border");
           if(cell.merge==2&&(!cell.content->text.empty()||!cell.content->objects.empty()))invalid("merged continuation cell contains visible content");visit(*cell.content,depth+1);
@@ -871,7 +895,7 @@ std::string gtkRtfWrite(const GtkRtfDocument& document) {
     if(para.lineExtra)unsupported("sl (non-default native line spacing)");
     if(std::abs(int64_t(para.lineSpacing))>31680||para.lineMultiple<0||para.lineMultiple>1||(para.lineMultiple&&para.lineSpacing<0)||para.defaultTab<1||para.defaultTab>31680)invalid("invalid paragraph line spacing or default tabs");
     if(para.numbering<0||para.numbering>5||para.numberStart<1||para.numberStart>1000000||(para.bullet&&para.numbering))invalid("invalid paragraph numbering");
-    gtkRtfValidateText(para.markerFont);if(para.markerFont.size()>255||para.markerFont.find_first_of(u";\r\n\t")!=Text::npos||!std::isfinite(para.markerSize)||para.markerSize<0||para.markerSize>3072||std::abs(para.markerSize*2-std::round(para.markerSize*2))>0.000001||para.markerBold< -1||para.markerBold>1||para.markerItalic< -1||para.markerItalic>1||para.markerAlignment<0||para.markerAlignment>2||para.markerColor< -1||para.markerColor>0xffffff)invalid("invalid marker formatting");
+    gtkRtfValidateText(para.markerFont);if(para.markerFont.size()>255||para.markerFont.find_first_of(u";\r\n\t")!=Text::npos||!std::isfinite(para.markerSize)||para.markerSize<0||para.markerSize>3072||std::abs(para.markerSize*2-std::round(para.markerSize*2))>0.000001||para.markerBold< -1||para.markerBold>1||para.markerItalic< -1||para.markerItalic>1||para.markerAlignment<0||para.markerAlignment>2||para.markerColor< -2||para.markerColor>0xffffff)invalid("invalid marker formatting");
     for(const auto& value:{para.numberBefore,para.numberAfter,para.marker}){gtkRtfValidateText(value);if(value.size()>64||value.find_first_of(u"\r\n\t")!=Text::npos)invalid("invalid list marker");}
     if(para.tabs.size()>64)fail(7,"RTF paragraph exceeds 64 tab stops");
     if(para.tabAlignments.size()>para.tabs.size())invalid("orphan tab alignments");
@@ -914,13 +938,13 @@ std::string gtkRtfWrite(const GtkRtfDocument& document) {
       control("deftab",para.defaultTab);
       for(size_t i=0;i<para.tabs.size();++i){const auto align=i<para.tabAlignments.size()?para.tabAlignments[i]:0;if(align)output+=align==1?"\\tqr":align==2?"\\tqc":"\\tqdec";control("tx",para.tabs[i]);}
       if(!para.marker.empty()){
-        output+="{\\pntext";if(!para.markerFont.empty())control("f",int64_t(fonts.at({para.markerFont,0})));if(para.markerSize)control("fs",int64_t(std::lround(para.markerSize*2)));if(para.markerBold>=0)control("b",para.markerBold);if(para.markerItalic>=0)control("i",para.markerItalic);if(para.markerColor>=0)control("cf",int64_t(colors.at(para.markerColor)));output+=' ';encodedText(output,para.marker,false,true);output+="\\tab}";
+        output+="{\\pntext";if(!para.markerFont.empty())control("f",int64_t(fonts.at({para.markerFont,0})));if(para.markerSize)control("fs",int64_t(std::lround(para.markerSize*2)));if(para.markerBold>=0)control("b",para.markerBold);if(para.markerItalic>=0)control("i",para.markerItalic);if(para.markerColor>= -1)control("cf",para.markerColor<0?0:int64_t(colors.at(para.markerColor)));output+=' ';encodedText(output,para.marker,false,true);output+="\\tab}";
       }
       if(para.bullet||para.numbering) {
         output+="{\\*\\pn";
         if(para.bullet)output+="\\pnlvlblt";
         else {static const char* types[]={"","\\pndec","\\pnucrm","\\pnlcrm","\\pnucltr","\\pnlcltr"};output+="\\pnlvlbody";output+=types[para.numbering];control("pnstart",para.numberStart);}
-        if(!para.markerFont.empty())control("pnf",int64_t(fonts.at({para.markerFont,0})));if(para.markerSize)control("pnfs",int64_t(std::lround(para.markerSize*2)));if(para.markerBold>=0)control("pnb",para.markerBold);if(para.markerItalic>=0)control("pni",para.markerItalic);if(para.markerColor>=0)control("pncf",int64_t(colors.at(para.markerColor)));if(para.markerAlignment)output+=para.markerAlignment==1?"\\pnqc":"\\pnqr";
+        if(!para.markerFont.empty())control("pnf",int64_t(fonts.at({para.markerFont,0})));if(para.markerSize)control("pnfs",int64_t(std::lround(para.markerSize*2)));if(para.markerBold>=0)control("pnb",para.markerBold);if(para.markerItalic>=0)control("pni",para.markerItalic);if(para.markerColor>= -1)control("pncf",para.markerColor<0?0:int64_t(colors.at(para.markerColor)));if(para.markerAlignment)output+=para.markerAlignment==1?"\\pnqc":"\\pnqr";
         output+="{\\pntxtb ";encodedText(output,para.numberBefore,false,true);output+='}';
         output+="{\\pntxta ";encodedText(output,para.numberAfter,false,true);output+='}';
         output+='}';

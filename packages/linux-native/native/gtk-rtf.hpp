@@ -24,7 +24,7 @@ struct GtkRtfParagraph {
   Text numberBefore, numberAfter = u".", marker;
   Text markerFont;
   double markerSize = 0; // Zero inherits the paragraph's character format.
-  int markerBold = -1, markerItalic = -1, markerAlignment = 0, markerColor = -1;
+  int markerBold = -1, markerItalic = -1, markerAlignment = 0, markerColor = -2; // -2 inherits; -1 is automatic.
   auto key() const { return std::tie(alignment,left,right,first,before,after,lineExtra,lineSpacing,lineMultiple,defaultTab,rtl,bullet,tabs,tabAlignments,numbering,numberStart,numberBefore,numberAfter,marker,markerFont,markerSize,markerBold,markerItalic,markerAlignment,markerColor); }
   bool operator==(const GtkRtfParagraph& value) const { return key()==value.key(); }
   bool operator!=(const GtkRtfParagraph& value) const { return !(*this==value); }
@@ -67,7 +67,7 @@ struct GtkRtfCell {
 };
 struct GtkRtfObject {
   enum Kind {Picture,TableRow,Region,Embedded} kind = Picture;
-  size_t first = 0, last = 0; // Pictures use U+FFFC; block objects U+FFFC U+2028.
+  size_t first = 0, last = 0; // Pictures use U+FFFC; rows U+FFFC LF; other blocks U+FFFC U+2028.
   std::string format, bytes, destination;
   Text label;
   int width = 0, height = 0, widthGoal = 0, heightGoal = 0;
