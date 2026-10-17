@@ -106,7 +106,7 @@ export async function buildLinuxAOTTemplate({architecture='x64',toolkit='gtk3',o
     }
     await Promise.all(Array.from({length:Math.min(jobs,sources.length)},worker));if(errors.length)throw errors[0];
     const filename='runtime-'+target.architecture,executable=path.join(work,filename);
-    const linkOptions=[...targetFlags,'-pie','-Wl,-z,relro,-z,now,-z,noexecstack','-Wl,--build-id=none','-Wl,-z,max-page-size='+target.pageBytes+',-z,common-page-size='+target.pageBytes];
+    const linkOptions=[...targetFlags,'-pie','-Wl,--as-needed','-Wl,-z,relro,-z,now,-z,noexecstack','-Wl,--build-id=none','-Wl,-z,max-page-size='+target.pageBytes+',-z,common-page-size='+target.pageBytes];
     await invoke(cxx,[...linkOptions,...objects,...libraries,'-ldl','-pthread','-o',executable]);
     await invoke(await linuxNativeTool(cross?target.triple+'-strip':'strip'),['--strip-debug',executable]);
     const bytes=new Uint8Array(await fs.readFile(executable));

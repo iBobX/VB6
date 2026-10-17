@@ -11,7 +11,7 @@ export const LINUX_METADATA_FLAG=0x02000000;
 const PHDR_SIZE=56,SHDR_SIZE=64,encoder=new TextEncoder(),decoder=new TextDecoder('utf-8',{fatal:true});
 const align=(value,unit)=>Math.ceil(value/unit)*unit;
 const bounded=(value,min,max,message='Unsafe ELF range')=>{if(!Number.isSafeInteger(value)||value<min||value>max)throw new Error(message);return value;};
-const libraries=/^lib(?:gtk-3|gtk-4|gdk-3|graphene-1\.0|X11|pangocairo-1\.0|pango-1\.0|gobject-2\.0|glib-2\.0|gio-2\.0|gdk_pixbuf-2\.0|cairo|cairo-gobject|harfbuzz|atk-1\.0|stdc\+\+|gcc_s|m|c|dl|pthread|fontconfig|freetype|cups|z)\.so(?:\.\d+)*$/;
+const libraries=/^lib(?:gtk-3|gtk-4|gdk-3|graphene-1\.0|vulkan|X11|pangocairo-1\.0|pango-1\.0|gobject-2\.0|glib-2\.0|gio-2\.0|gdk_pixbuf-2\.0|cairo|cairo-gobject|harfbuzz|atk-1\.0|stdc\+\+|gcc_s|m|c|dl|pthread|fontconfig|freetype|cups|z)\.so(?:\.\d+)*$/;
 export function inspectLinuxELF(input,{requireProject=false,architecture,toolkit}={}){
   const bytes=input instanceof Uint8Array?input:new Uint8Array(input);
   if(bytes.length<64||bytes.length>LINUX_LIMITS.imageBytes)throw new Error('Invalid or excessive ELF image');
