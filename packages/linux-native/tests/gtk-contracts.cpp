@@ -89,20 +89,42 @@ int main() {
     require(gtk_widget_get_parent(control(instance,"Nested")->view)==control(instance,"CFrame")->content,"Nested control is not contained in its GTK frame");
     for(auto& type:types){auto c=control(instance,"C"+type);require(!c->disposed&&c->handle>0,"Native control type was not initialized");}
     gtk_button_clicked(GTK_BUTTON(control(instance,"CCommandButton")->widget));host.check();require(buttonClicks==1,"Native GTK clicked did not dispatch VB Click");
-    gtk_menu_item_activate(GTK_MENU_ITEM(control(instance,"ExitMenu")->menu));host.check();require(menuClicks==1,"Native menu did not dispatch VB Click");
+#if GTK_MAJOR_VERSION >= 4
+    require(GTK_IS_POPOVER_MENU_BAR(form->menuBar)&&G_IS_MENU_MODEL(form->menuModel),"GTK4 menus do not use native popover menu models");
+    g_action_activate(G_ACTION(control(instance,"ExitMenu")->menuAction),nullptr);
+#else
+    gtk_menu_item_activate(GTK_MENU_ITEM(control(instance,"ExitMenu")->menu));
+#endif
+    host.check();require(menuClicks==1,"Native menu did not dispatch VB Click");
     auto entry=control(instance,"CTextBox");gtk_entry_set_text(GTK_ENTRY(entry->widget),"A😀ŻZ");host.check();require(textChanges==1,"Native edit did not dispatch VB Change");
     entry->editSelect(1,2);require(entry->get(runtime,"seltext").string()==u"😀","GTK selection lost VB UTF-16 offsets");
     entry->set(runtime,"seltext",Value::string(u"Ω"));require(entry->editText()==u"AΩŻZ","UTF-16 edit replacement is incorrect");
-    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(control(instance,"CCheckBox")->widget),TRUE);host.check();require(checkClicks==1,"GTK check toggling did not dispatch VB Click");
+    gtkNativeToggleSet(control(instance,"CCheckBox")->widget,true);host.check();require(checkClicks==1,"GTK check toggling did not dispatch VB Click");
     control(instance,"CCheckBox")->set(runtime,"value",Value::integer(0));require(checkClicks==2,"Programmatic Value assignment did not dispatch VB Click");
+    gboolean handled=FALSE;
+#if GTK_MAJOR_VERSION >= 4
+    gtk_widget_grab_focus(entry->widget);
+    auto* keys=GTK_EVENT_CONTROLLER_KEY(g_object_get_data(G_OBJECT(entry->widget),"vb6-key-controller"));require(keys!=nullptr,"GTK4 editor has no native key event controller");
+    g_signal_emit_by_name(keys,"key-pressed",GDK_KEY_x,0,GdkModifierType(0),&handled);
+#else
     auto* key=gdk_event_new(GDK_KEY_PRESS);key->key.keyval=GDK_KEY_x;key->key.state=GdkModifierType(0);key->key.string=g_strdup("x");key->key.length=1;key->key.window=gtk_widget_get_window(entry->widget);if(key->key.window)g_object_ref(key->key.window);
-    gboolean handled=FALSE;g_signal_emit_by_name(entry->widget,"key-press-event",&key->key,&handled);gdk_event_free(key);host.check();require(handled&&keyDown==1,"KeyPreview cancellation did not stop native GTK key handling");
-    cancelKeys=false;GdkEventKey unicodeKey{};unicodeKey.type=GDK_KEY_PRESS;unicodeKey.keyval=gdk_unicode_to_keyval(0x4e2d);
+    g_signal_emit_by_name(entry->widget,"key-press-event",&key->key,&handled);gdk_event_free(key);
+#endif
+    host.check();require(handled&&keyDown==1,"KeyPreview cancellation did not stop native GTK key handling");
+    cancelKeys=false;GdkEventKey unicodeKey{};unicodeKey.keyval=gdk_unicode_to_keyval(0x4e2d);
+#if GTK_MAJOR_VERSION < 4
+    unicodeKey.type=GDK_KEY_PRESS;
+#endif
     require(!host.keyEvent(*entry,&unicodeKey,true)&&lastKeyPress==0x4e2d,"Non-Latin key input was swallowed or omitted KeyPress");
     unicodeKey.keyval=gdk_unicode_to_keyval(0x1f600);require(!host.keyEvent(*entry,&unicodeKey,true),"Supplementary Unicode key input was swallowed");
     unicodeKey.keyval=GDK_KEY_AudioRaiseVolume;require(!host.keyEvent(*entry,&unicodeKey,true),"Unmapped native key was swallowed");
-    auto label=control(instance,"CLabel");GdkEventButton release{};release.type=GDK_BUTTON_RELEASE;release.button=1;
-    g_signal_emit_by_name(label->view,"button-release-event",&release,&handled);host.check();require(labelClicks==1,"Native label event box did not dispatch VB Click");
+    auto label=control(instance,"CLabel");
+#if GTK_MAJOR_VERSION >= 4
+    auto* click=GTK_GESTURE_CLICK(g_object_get_data(G_OBJECT(label->widget),"vb6-click-controller"));require(click!=nullptr,"GTK4 label has no native click gesture");g_signal_emit_by_name(click,"released",1,1.0,1.0);
+#else
+    GdkEventButton release{};release.type=GDK_BUTTON_RELEASE;release.button=1;g_signal_emit_by_name(label->view,"button-release-event",&release,&handled);
+#endif
+    host.check();require(labelClicks==1,"Native label event did not dispatch VB Click");
     auto array=std::dynamic_pointer_cast<GtkControlArray>(instance->controls.at("buttons"));array->invoke(runtime,"load",{Arg(Value::integer(5))});gtk_button_clicked(GTK_BUTTON(array->elements.at(5)->widget));host.check();require(arrayIndex==5,"Native control array event omitted Index");auto unloaded=array->elements.at(5);auto staleHandle=unloaded->handle;array->invoke(runtime,"unload",{Arg(Value::integer(5))});require(unloaded->disposed&&!host.control(staleHandle),"Control array unload retained live native handle");expectError(91,[&]{unloaded->get(runtime,"caption");});
     auto canvas=control(instance,"CPictureBox");auto* pixels=cairo_image_surface_create(CAIRO_FORMAT_ARGB32,64,64);auto* cr=cairo_create(pixels);canvas->set(runtime,"backcolor",Value::integer(0xffffff));GtkDrawing pixel=gtkDrawing(*canvas,"pixel");pixel.color=0xff;pixel.coordinates={10,10};gtkAppendDrawing(*canvas,pixel);gtkDraw(*canvas,cr);cairo_surface_flush(pixels);uint32_t actual=0;std::memcpy(&actual,cairo_image_surface_get_data(pixels)+10*cairo_image_surface_get_stride(pixels)+40,4);require(actual==0xffff0000u,"Cairo PSet did not render OLE red correctly");cairo_destroy(cr);cairo_surface_destroy(pixels);
     auto dc=host.api(runtime,"user32.GetDC",{Arg(Value::integer(canvas->handle))});auto pen=host.api(runtime,"gdi32.CreatePen",{Arg(Value::integer(0)),Arg(Value::integer(2)),Arg(Value::integer(0xff))});auto old=host.api(runtime,"gdi32.SelectObject",{Arg(dc),Arg(pen)});require(host.api(runtime,"gdi32.DeleteObject",{Arg(pen)}).integral()==0,"Selected GDI pen was deleted");host.api(runtime,"gdi32.MoveToEx",{Arg(dc),Arg(Value::integer(2)),Arg(Value::integer(2)),Arg(Value::integer(0))});host.api(runtime,"gdi32.LineTo",{Arg(dc),Arg(Value::integer(20)),Arg(Value::integer(20))});host.api(runtime,"gdi32.SelectObject",{Arg(dc),Arg(old)});require(host.api(runtime,"gdi32.DeleteObject",{Arg(pen)}).integral()==1,"Unselected GDI pen did not release");require(host.api(runtime,"user32.ReleaseDC",{Arg(Value::integer(canvas->handle)),Arg(dc)}).integral()==1,"GDI context did not release");require(!host.handles.find(int32_t(dc.integral())),"Released DC handle remained live");
@@ -126,7 +148,7 @@ int main() {
         auto original=gtkLoadPicture(host,bytes);auto filename=cursor?u"gtk-resource-roundtrip.cur":u"gtk-resource-roundtrip.ico";
         host.builtin(frame,"savepicture",{Arg(original),Arg(Value::string(filename))});
         require(readNativeResourceFile(toUTF8(filename))==bytes,"SavePicture changed ICO/CUR frames or hotspot bytes");
-        auto reloaded=std::static_pointer_cast<GtkPicture>(host.builtin(frame,"loadpicture",{Arg(Value::string(filename))}).asObject());
+        auto reloaded=std::static_pointer_cast<vb6::GtkPicture>(host.builtin(frame,"loadpicture",{Arg(Value::string(filename))}).asObject());
         require(reloaded->pictureType==3&&reloaded->cursor==cursor&&(!cursor||(reloaded->hotspotX==3&&reloaded->hotspotY==4)),"ICO/CUR roundtrip lost native picture metadata");
         std::filesystem::remove(toUTF8(filename));
       }
@@ -157,7 +179,13 @@ int main() {
     for(int attempt=0;attempt<3;++attempt)expectError(7,[&]{nodes->invoke(runtime,"add",{Arg(Value::integer(1025)),Arg(Value::integer(4)),Arg(Value::string(u"")),Arg(Value::string(u"too deep"))});});
     require(nodes->values.size()==1025&&nodes->values.back()->children.empty()&&tree->model==boundaryModel,"Rejected TreeView Add mutated the node collection or native model");checkNativeTree(*tree,nodes->values);
     nodes->invoke(runtime,"remove",{Arg(Value::integer(1))});require(nodes->values.empty(),"Removing a deep tree retained descendants");checkNativeTree(*tree,nodes->values);
-    gboolean cancelled=FALSE;g_signal_emit_by_name(form->window,"delete-event",nullptr,&cancelled);host.check();require(cancelled&&instance->loaded&&queryCount==1&&unloadCount==0,"QueryUnload cancellation destroyed the GTK form");
+    gboolean cancelled=FALSE;
+#if GTK_MAJOR_VERSION >= 4
+    g_signal_emit_by_name(form->window,"close-request",&cancelled);
+#else
+    g_signal_emit_by_name(form->window,"delete-event",nullptr,&cancelled);
+#endif
+    host.check();require(cancelled&&instance->loaded&&queryCount==1&&unloadCount==0,"QueryUnload cancellation destroyed the GTK form");
     auto modalInstance=runtime.instance(modal.name);runtime.load(modalInstance);host.formCall(modalInstance,"show",{Arg(Value::integer(1)),Arg(Value::object(instance))});require(!modalInstance->loaded&&modalTicks==1&&instance->loaded,"Modal nested loop failed to unwind after timer unload");
     auto moduleInstance=runtime.instance(callbacks.name);auto callback=Value::object(std::make_shared<NativeCallback>(moduleInstance,"ontimer"));
     auto nativeTimer=host.api(runtime,"user32.SetTimer",{Arg(Value::integer(form->surface->handle)),Arg(Value::integer(0)),Arg(Value::integer(10)),Arg(callback)});require(nativeTimer.integral()>0,"SetTimer did not register native callback");
