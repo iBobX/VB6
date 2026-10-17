@@ -62,7 +62,6 @@ void gtk_container_add(GtkContainer*,GtkWidget*);
 void gtk_container_remove(GtkContainer*,GtkWidget*);
 GList* gtk_container_get_children(GtkContainer*);
 GtkWidget* gtk_bin_get_child(GtkBin*);
-void gtk_container_set_focus_chain(GtkContainer*,GList*);
 void gtk_widget_destroy(GtkWidget*);
 void gtk_widget_show_all(GtkWidget*);
 void gtk_box_pack_start(GtkBox*,GtkWidget*,gboolean,gboolean,guint);

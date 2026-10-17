@@ -243,7 +243,14 @@ void GtkHost::createForm(const std::shared_ptr<Instance>& owner) {
         gtk_widget_set_can_default(c->widget,TRUE); gtk_window_set_default(GTK_WINDOW(value->window),c->widget);
       }
     }
-    for(auto& entry:chains) { gtk_container_set_focus_chain(GTK_CONTAINER(entry.first),entry.second); g_list_free(entry.second); }
+    for(auto& entry:chains) {
+#if GTK_MAJOR_VERSION < 4
+      gtk_container_set_focus_chain(GTK_CONTAINER(entry.first),entry.second);
+#endif
+      // GTK4's NativeFixed focus virtual reads TabIndex directly; changing
+      // native sibling order here would also change the designer's ZOrder.
+      g_list_free(entry.second);
+    }
   } catch (...) {
     for(auto& control:gtkFormControls(owner)) control->dispose();
     if(value->surface) value->surface->dispose();

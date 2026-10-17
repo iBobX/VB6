@@ -213,7 +213,6 @@ void gtk_container_remove(GtkContainer* container,GtkWidget* child) {
   else if(GTK_IS_VIEWPORT(container))gtk_viewport_set_child(GTK_VIEWPORT(container),nullptr);
   else gtk_widget_unparent(child);
 }
-void gtk_container_set_focus_chain(GtkContainer* parent,GList* chain) { GtkWidget* previous=nullptr;for(auto* node=chain;node;node=node->next){auto* child=GTK_WIDGET(node->data);if(gtk_widget_get_parent(child)==parent){gtk_widget_insert_after(child,parent,previous);previous=child;}} }
 void gtk_widget_destroy(GtkWidget* widget) {
   if(!widget||g_object_get_data(G_OBJECT(widget),"vb6-destroying"))return;g_object_ref(widget);g_object_set_data(G_OBJECT(widget),"vb6-destroying",GINT_TO_POINTER(1));
   // VB owns references independently from the native parent. Explicitly dispose
