@@ -7,6 +7,10 @@
 namespace vb6 {
 Value MacControl::invoke(Runtime&rt,const std::string&raw,Args args){
   if(disposed)fail(91);bool put=raw.rfind("let:",0)==0||raw.rfind("set:",0)==0;auto name=lower(put?raw.substr(4):raw);if(name.empty())name=defaultMember();
+  // Toolbar.Buttons(key) and the other collection properties invoke Item.
+  // Preserve the collection's identity, index rules and argument diagnostics.
+  if(!put&&(name=="nodes"||name=="listitems"||name=="columnheaders"||name=="panels"||name=="buttons"||name=="listimages"||(name=="tabs"&&spec.type!="SSTab")))
+    return args.empty()?Value::object(items(name)):items(name)->invoke(rt,"item",std::move(args));
   if(spec.type=="SSTab"&&(name=="tabcaption"||name=="tabenabled"||name=="tabvisible")) {
     if(args.size()!=(put?2:1))fail(450);return nativeIndexedTab(*this,name,args[0].value.integral(),put?&args[1].value:nullptr);
   }

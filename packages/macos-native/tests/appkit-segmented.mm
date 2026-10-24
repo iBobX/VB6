@@ -51,6 +51,9 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   const auto tabHandle=tab->handle,toolbarHandle=toolbar->handle;auto tabs=(NSTabView*)tab->widget;
   tab->set(rt,"width",Value::integer(6000));tab->set(rt,"height",Value::integer(2400));
   auto items=tab->items("tabs");auto first=items->items.front();auto second=add(rt,items,u"second",u"Second");auto third=add(rt,items,u"third",u"Third");
+  assert(tab->invoke(rt,"Tabs",{}).asObject()==items);
+  assert(tab->invoke(rt,"Tabs",{Arg(Value::integer(2))}).asObject()==second);
+  assert(tab->invoke(rt,"tabs",{Arg(Value::string(u"SECOND"))}).asObject()==second);
   NSTabViewItem*firstPage=[tabs tabViewItemAtIndex:0];NSView*originalParent=edit->view.superview;const auto originalFrame=edit->view.frame;
   [firstPage.view addSubview:edit->view];edit->view.frame=NSMakeRect(8,8,200,28);
   setting(rt,edit,"text",u"Keep selection Ω");edit->set(rt,"selstart",Value::integer(2));edit->set(rt,"sellength",Value::integer(4));edit->invoke(rt,"setfocus",{});
@@ -150,6 +153,8 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   rejected([&]{pages->set(rt,"tabs",Value::integer(1));},380);assert(pages->get(rt,"tabs").integral()==3);[window makeFirstResponder:nil];child->dispose();pageView->dispose();
   form->controls.erase("appearancepagechild");form->controls.erase("appearancepageview");form->module->controls.pop_back();form->module->controls.pop_back();
   pages->set(rt,"tabs",Value::integer(2));assert(pages->get(rt,"tabs").integral()==2);
+  assert(pages->invoke(rt,"Tabs",{}).integral()==2);
+  rejected([&]{pages->invoke(rt,"Tabs",{Arg(Value::integer(1))});},438);
 
   // Multiline editors use NSTextDelegate, not the NSTextField delegate path.
   // Cancellation must retain the active page, focus, selection and rich runs.
@@ -177,6 +182,14 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
   for(int mode:{0,1,2}) {
     setting(rt,toolbar,"macoscontrolstyle",u"automatic");buttons->invoke(rt,"clear",{});
     auto a=add(rt,buttons,u"a",u"First",mode),b=add(rt,buttons,u"b",u"Second",mode);
+    assert(toolbar->invoke(rt,"Buttons",{}).asObject()==buttons);
+    assert(toolbar->invoke(rt,"Buttons",{Arg(Value::integer(1))}).asObject()==a);
+    assert(toolbar->invoke(rt,"buttons",{Arg(Value::string(u"B"))}).asObject()==b);
+    assert(toolbar->invoke(rt,"Buttons",{Arg(Value::integer(2),"index")}).asObject()==b);
+    rejected([&]{toolbar->invoke(rt,"Buttons",{Arg(Value::integer(0))});},35600);
+    rejected([&]{toolbar->invoke(rt,"Buttons",{Arg(Value::integer(3))});},35600);
+    rejected([&]{toolbar->invoke(rt,"Buttons",{Arg(Value::string(u"missing"))});},35601);
+    rejected([&]{toolbar->invoke(rt,"Buttons",{Arg(Value::integer(1)),Arg(Value::integer(2))});},450);
     assert(a->get(rt,"value").integral()==0&&b->get(rt,"value").integral()==0);
     if(mode!=0)a->set(rt,"value",Value::integer(1));
     setting(rt,toolbar,"macoscontrolstyle",u"segmented");auto native=toolbar->appearanceSegments;
