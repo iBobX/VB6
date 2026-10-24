@@ -119,13 +119,18 @@ try:
         for sample in catalog:
             project=json.loads((ROOT/f'examples/{sample["id"]}.vb6web').read_text())
             ide.evaluate('project=>vb6Studio.loadProject(project)',project)
-            expected=ide.evaluate('vb6Studio.project')
+            authored=ide.evaluate('vb6Studio.project')
+            expected=json.loads(json.dumps(authored))
+            # Deployment consumes validated forms; only the design-time XAML
+            # sidecar is omitted. Every other authored field must stay exact.
+            for module in expected['modules']: module.pop('xaml',None)
             with ide.expect_download() as event:
                 ide.locator('[data-command="exportHTML"]').first.click()
             download=event.value
             check(download.failure() is None,'IDE download failed')
             file=REPORT/(sample['id']+'.html');download.save_as(file)
             data=file.read_bytes();text=data.decode('utf-8')
+            check(ide.evaluate('vb6Studio.project')==authored,'IDE export changed the authored project')
             check(text.startswith('<!doctype html>'),'Missing standalone document')
             check('VB6Runtime.mountApplication' in text,'Missing embedded runtime')
             origins=['inline'] if INLINE else ['http','file']
