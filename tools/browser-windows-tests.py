@@ -543,8 +543,11 @@ class BrowserWindows(unittest.TestCase):
 
     @unittest.skipIf(os.environ.get('VB6_TEST_TRANSPORT') == 'memory', 'Needs real navigation; exercised in HTTP CI')
     def test_standalone_file_without_network(self):
-        self.page.goto((ROOT / 'dist' / 'VB6-Studio-Web.html').as_uri())
-        self.page.wait_for_function('typeof vb6Studio === "object"')
+        # Use the standalone startup budget for this large inline document.
+        # Window interactions retain the context's ordinary 6-second deadline.
+        self.page.goto((ROOT / 'dist' / 'VB6-Studio-Web.html').as_uri(), wait_until='commit')
+        self.page.wait_for_function('typeof vb6Studio === "object" && vb6Studio.root?.isConnected && typeof vb6Studio.browserWindows?.detach === "function"',
+                                    polling=100, timeout=60000)
         requests = []
         self.context.on('request', lambda req: requests.append(req.url) if req.url.startswith(('http:', 'https:')) else None)
         popup = self.tool()
