@@ -3,8 +3,10 @@
 Mixed into the application-theme runner so normal browser CI executes these
 checks. The source fixture is owned; no Figma credentials or Apple assets are used.
 """
+import io
 import json
 from pathlib import Path
+from PIL import Image, ImageChops
 from playwright.sync_api import expect
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -146,6 +148,92 @@ class MacOS26CompatibilityChecks:
             self.assertEqual(page.evaluate('JSON.stringify(vb6Application.project)'),saved)
         expect(page.locator('[data-control="SearchStatus"]')).to_have_text('1:Retained search value')
         self.record('macOS style, size and application theme changes retain the same control/input, focus, range direction and authored project')
+
+    def test_macos26_placeholder_glyphs_preserve_disabled_and_other_palette_paint(self):
+        page = self.macos26_runtime()
+        self.macos26_set('Search', {'Text':''})
+        self.macos26_set('Choices', {'Style':0,'ListIndex':-1,'Text':'','PlaceholderText':'Choose appearance'})
+        page.evaluate('''()=>{
+            const search=compatControls.Search.node;
+            window.placeholderLocation={parent:search.parentNode,next:search.nextSibling};
+            compatControls.Sidebar.childHost.append(search);
+            document.activeElement?.blur();
+        }''')
+        page.mouse.move(1400,1600)
+        fields = {name:page.locator(f'[data-control="{name}"] input') for name in ('Search','Choices')}
+
+        def capture(field):
+            return Image.open(io.BytesIO(field.screenshot(animations='disabled'))).convert('RGB')
+
+        def glyphs(field, color, case, rejected=None, opacity='1'):
+            expect(field).to_have_value('')
+            self.assertTrue(field.evaluate('e=>e.matches(":placeholder-shown")'),case)
+            actual = capture(field)
+            field.evaluate('e=>e.setAttribute("data-placeholder-paint-check","")')
+            reference = page.add_style_tag(content='/* Independent placeholder paint reference. */')
+            placeholder = field.get_attribute('placeholder')
+            def reference_color(value):
+                reference.evaluate('(e,css)=>{e.textContent=css;}',
+                    '[data-placeholder-paint-check]::placeholder {color:'+value+'!important;opacity:'+opacity+'!important;}')
+            try:
+                # WebKit reports the input color for getComputedStyle(::placeholder).
+                # Compare actual glyph pixels with an explicit reference on the same
+                # retained field; no font, geometry, mask or tolerance is substituted.
+                reference_color(color)
+                expected = capture(field)
+                self.assertIsNone(ImageChops.difference(actual,expected).getbbox(),case)
+                field.evaluate('e=>e.placeholder=""')
+                self.assertIsNotNone(ImageChops.difference(expected,capture(field)).getbbox(),case+' has painted glyphs')
+                field.evaluate('(e,value)=>{e.placeholder=value;}',placeholder)
+                if rejected:
+                    reference_color(rejected)
+                    self.assertIsNotNone(ImageChops.difference(expected,capture(field)).getbbox(),case+' rejects disabled ink')
+            finally:
+                field.evaluate('(e,value)=>{e.placeholder=value;e.removeAttribute("data-placeholder-paint-check");}',placeholder)
+                reference.evaluate('e=>e.remove()')
+
+        try:
+            for theme, contrast in (('macos26',False),('macos26-dark',False),('macos26',True),
+                                    ('macos26-dark',True),('classic',False),('fluent',False),('fluent-dark',False)):
+                self.theme(theme,{'reduceMotion':True,'increaseContrast':contrast})
+                for name, field in fields.items():
+                    fallback = field.evaluate('''e=>{const s=getComputedStyle(e);return s.getPropertyValue('--winui-TextControlPlaceholderForeground').trim()||s.getPropertyValue('--vb-gray').trim();}''')
+                    # The existing increased-contrast palette promotes secondary
+                    # content to the primary control-label text role.
+                    color = ({'macos26':'#272727','macos26-dark':'#dddddd'} if contrast else
+                             {'macos26':'#6b6b6b','macos26-dark':'#a3a3a3'}).get(theme,fallback)
+                    expect(field).to_be_enabled()
+                    glyphs(field,color,f'{theme} contrast={contrast} enabled {name}',fallback if theme.startswith('macos26') else None)
+                    self.macos26_set(name,{'Enabled':0})
+                    expect(field).to_be_disabled()
+                    glyphs(field,fallback,f'{theme} disabled {name}')
+                    self.macos26_set(name,{'Enabled':-1})
+                    expect(field).to_be_enabled()
+                if theme.startswith('macos26'):
+                    # A disabled container rejects input even though its child's
+                    # own Enabled property/native input remain enabled.
+                    self.macos26_set('Sidebar',{'Enabled':0})
+                    page.wait_for_function('compatControls.Sidebar.node.classList.contains("disabled")')
+                    expect(fields['Search']).to_be_enabled()
+                    fallback = fields['Search'].evaluate('e=>getComputedStyle(e).getPropertyValue("--vb-gray").trim()')
+                    glyphs(fields['Search'],fallback,f'{theme} disabled parent')
+                    self.macos26_set('Sidebar',{'Enabled':-1})
+                    page.wait_for_function('!compatControls.Sidebar.node.classList.contains("disabled")')
+                    glyphs(fields['Search'],color,f'{theme} restored parent')
+            self.theme('macos26',{'reduceMotion':True})
+            page.emulate_media(forced_colors='active')
+            if page.evaluate('matchMedia("(forced-colors:active)").matches'):
+                for name, field in fields.items():
+                    glyphs(field,'revert','forced colors enabled '+name,opacity='revert')
+                    self.macos26_set(name,{'Enabled':0})
+                    expect(field).to_be_disabled()
+                    glyphs(field,'revert','forced colors disabled '+name,opacity='revert')
+        finally:
+            page.emulate_media(forced_colors='none')
+            page.evaluate('''()=>{
+                placeholderLocation.parent.insertBefore(compatControls.Search.node,placeholderLocation.next);
+            }''')
+        self.record('actual placeholder glyphs use macOS secondary ink in light/dark/increased contrast, retain disabled child/container paint, restore Classic/Fluent fallbacks and defer to forced colors')
 
     def test_macos26_semantic_colors_remain_live_and_explicit_same_color_unbinds(self):
         page = self.macos26_runtime()
