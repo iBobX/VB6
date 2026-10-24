@@ -183,9 +183,12 @@ void checkNativeSegmented(Runtime&rt,MacHost&host,const std::shared_ptr<Instance
     assert(native&&native.segmentCount==2&&toolbar->widget==toolbarWidget&&toolbar->handle==toolbarHandle);
     assert(native.trackingMode==(mode==0?NSSegmentSwitchTrackingMomentary:mode==1?NSSegmentSwitchTrackingSelectAny:NSSegmentSwitchTrackingSelectOne));
     int before=buttonClicks;const bool pressed=pressSegment(native,1);host.check();
-    if(!pressed||buttonClicks!=before+1||observedButton!=b)std::cerr<<"Segment action mode "<<mode<<", pressed "<<pressed<<", selected "<<native.selectedSegment<<", clicks "<<buttonClicks-before<<", expected item "<<(observedButton==b)<<'\n';
-    assert(pressed);assert(buttonClicks==before+1);assert(observedButton==b);
+    if(buttonClicks!=before+1||observedButton!=b)std::cerr<<"Segment action mode "<<mode<<", pressed "<<pressed<<", selected "<<native.selectedSegment<<", clicks "<<buttonClicks-before<<", expected item "<<(observedButton==b)<<'\n';
+    // AppKit can return NO after a momentary press has already sent its action.
+    // Prove delivery through the real VB event and original item, then state.
+    assert(buttonClicks==before+1);assert(observedButton==b);
     assert(b->get(rt,"value").integral()==(mode==0?0:1));assert(a->get(rt,"value").integral()==(mode==1?1:0));
+    if(mode==0)assert(![native isSelectedForSegment:0]&&![native isSelectedForSegment:1]);
     b->set(rt,"enabled",Value::boolean(false));before=buttonClicks;pressSegment(native,1);host.check();assert(buttonClicks==before);
     b->set(rt,"enabled",Value::boolean(true));a->set(rt,"visible",Value::boolean(false));assert(native.segmentCount==1&&toolbar->appearanceSegmentItems.front()==b->identity);
     if(mode==2){
