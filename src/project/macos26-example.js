@@ -24,7 +24,7 @@ export const MACOS26_PREFERENCES_XAML = `<mac:Window xmlns="http://schemas.micro
         mac:Canvas.Left="24" mac:Canvas.Top="62" Width="732" Height="24"
         Foreground="{ThemeResource macOS.secondaryLabelColor}"/>
     <mac:Label Text="Layout" mac:Canvas.Left="24" mac:Canvas.Top="110" Width="350" Height="24"/>
-    <!-- Each segment is a real Toolbar button, passed to the VB ButtonClick handler. -->
+    \u003c!-- Each segment is a real Toolbar button, passed to the VB ButtonClick handler. -->
     <mac:SegmentedControl x:Name="LayoutMode" mac:Canvas.Left="24" mac:Canvas.Top="142"
         Width="350" Height="32" ControlSize="large" SelectionMode="Single" SelectedIndex="1"
         Action="LayoutMode_ButtonClick" mac:Accessibility.Label="Layout density">
