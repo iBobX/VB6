@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from PIL import Image, ImageChops
 from playwright.sync_api import expect
+from stable_pixels import capture_stable_pixels
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / 'reports/application-themes/fixtures'
@@ -163,7 +164,11 @@ class MacOS26CompatibilityChecks:
         fields = {name:page.locator(f'[data-control="{name}"] input') for name in ('Search','Choices')}
 
         def capture(field):
-            return Image.open(io.BytesIO(field.screenshot(animations='disabled'))).convert('RGB')
+            # A disabled field can expose its final DOM state before Chromium's
+            # rounded border/shadow paint settles. Stabilize each image without
+            # consulting the reference; the full pixel comparison stays exact.
+            return capture_stable_pixels(lambda:
+                Image.open(io.BytesIO(field.screenshot(animations='disabled'))).convert('RGB'))
 
         def glyphs(field, color, case, rejected=None, opacity='1'):
             expect(field).to_have_value('')
